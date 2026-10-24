@@ -1,6 +1,7 @@
-local S=(type(__SZTF3F6)=='table' and __SZTF3F6.protocol==6 and __SZTF3F6) or {protocol=6,version='1.0.5',settings={},backups={},jobs={},lastMessage='已连接游戏内存',lastError='',catalog={},stocks={},worlds={},tasks={},nextScan=0,commandCount=0}
-S.version='1.0.5';S.protocol=6
+local S=(type(__SZTF3F6)=='table' and __SZTF3F6.protocol==6 and __SZTF3F6) or {protocol=6,version='1.1.0',settings={},backups={},jobs={},lastMessage='已连接游戏内存',lastError='',catalog={},stocks={},worlds={},tasks={},nextScan=0,commandCount=0}
+S.version='1.1.0';S.protocol=6
 local CT=api and api.type and api.type.ComponentType or {}
+local isCallable
 local function arr(t) return setmetatable(t or {},{jsonArray=true}) end
 local function esc(s) return '"'..tostring(s):gsub('[%z\1-\31\\"]',function(c) if c=='"' then return '\\"' elseif c=='\\' then return '\\\\' else return string.format('\\u%04x',string.byte(c)) end end)..'"' end
 local function json(v,seen)
@@ -14,17 +15,37 @@ local function component(e,t) if not e or t==nil then return nil end;local ok,c=
 local function entities(t) local ok,v=pcall(api.engine.getEntitiesWithComponent,t);return ok and v or {} end
 local function module(n) return type(_ug_loadedModules)=='table' and _ug_loadedModules['::/'..n..'.tl'] or nil end
 local function now() return api.util.getApplicationTime() end
+local function ownName(e)
+ local n=component(e,CT.NAME)
+ if n and type(n.name)=='string' and n.name:match('%S') then return n.name end
+end
+local function gameName(e)
+ local getter=api and api.engine and api.engine.util and api.engine.util.getEntityName
+ if isCallable and isCallable(getter) then
+  local ok,value=pcall(getter,e)
+  if ok and type(value)=='string' and value:match('%S') then return value end
+ end
+ local n=ownName(e);if n then return n end
+ local ind=component(e,CT.INDUSTRY)
+ if ind then return ownName(ind.construction) end
+end
 local function name(e,default)
- local n=component(e,CT.NAME);if n and n.name~='' then return n.name end
- local ind=component(e,CT.INDUSTRY);if ind then local c=component(ind.construction,CT.CONSTRUCTION);if c then local id=api.res.constructionRep.find(c.fileName);if id>=0 then local r=api.res.constructionRep.get(id);if r.description.name~='' then return r.description.name..' #'..e end end end end
- return default..' #'..e
+ local n=gameName(e);if n then return n end
+ local ok,label=pcall(function()
+  local ind=component(e,CT.INDUSTRY);local c=ind and component(ind.construction,CT.CONSTRUCTION)
+  if not c then return nil end
+  local id=api.res.constructionRep.find(c.fileName)
+  if id>=0 then local r=api.res.constructionRep.get(id);return r and r.description and r.description.name end
+ end)
+ if ok and type(label)=='string' and label~='' then return label end
+ return default or '未命名'
 end
 local function scriptState(path) local ok,e=pcall(api.engine.system.gameScriptSystem.getEntityForGameScript,path);if not ok then return nil end;local c=component(e,CT.GAME_SCRIPT);return c and c.state end
 local function send(c,callback)
  S.commandCount=S.commandCount+1
  api.cmd.sendCommand(c,function(data,success,result) if not success then S.lastError='游戏未执行该命令，请查看诊断';S.lastMessage=S.lastError end;if callback then callback(success,result) end end)
 end
-local function event(id,name,param) send(api.cmd.makeScriptingSendEventCmd('速智电玩',id,name,param)) end
+local function event(id,name,param) send(api.cmd.makeScriptingSendEventCmd('TF3Modifier',id,name,param)) end
 local function book(amount,automatic,callback)
  if amount==0 then return end
  if automatic then S.pendingFinance={at=now(),done=false} end
@@ -43,7 +64,7 @@ local function path(p)
 end
 local function finite(v) return type(v)=='number' and v==v and math.abs(v)<math.huge end
 local function need(ok,why) assert(ok,why) end
-local function isCallable(v)
+isCallable=function(v)
  local t=type(v);if t=='function' then return true end;if t~='table' then return false end
  local proof=__SZTF3Callable6
  return type(proof)=='table' and getmetatable(proof)==nil and proof[v]==true
@@ -93,6 +114,7 @@ local function refreshCapabilities()
  cap('camera',function()funcs({'api.gui.camera.getCameraData','api.gui.camera.setCameraData','api.type.Vec5f.new'});fields(api.gui.camera.getCameraData(),{'x','y','z','w','q'},'镜头') end)
  cap('focus',function()funcs({'api.gui.camera.focusEntity'});need(S.capabilities.camera.supported,S.capabilities.camera.reason) end)
  S.capabilities['return']=S.capabilities.camera
+ cap('rename_entity',function()cmd('makeEntitySetNameCmd');need(CT.NAME~=nil,'当前游戏未提供名称组件 NAME') end)
  S.nextCapability=now()+3
 end
 local function requireCap(id)
@@ -157,15 +179,15 @@ local function stockOptions()
  if sl and not seen[sid] then seen[sid]=true;local slots=arr()
  for k,st in pairs(sl.stocks) do local i=tonumber(k)-1;local types=api.engine.util.stock.getStockCargoTypes(sid,i);local allowed=arr();for _,v in pairs(types) do allowed[#allowed+1]=v end
  slots[#slots+1]={index=i,cargo=st.cargoType,allowed=allowed,capacity=st.capacity,count=api.engine.system.simEntityAtStockSystem.getStockCount(sid,i),kind=tostring(st.type)} end
- r[#r+1]={id=tostring(sid),name=name(e,ct==CT.WAREHOUSE and '仓库' or ct==CT.TOWN and '城镇库存' or '产业库存'),slots=slots}
+ r[#r+1]={id=tostring(sid),nameEntity=tostring(e),gameName=gameName(e) or '',name=name(e,ct==CT.WAREHOUSE and '仓库' or ct==CT.TOWN and '城镇库存' or '产业库存'),slots=slots}
  end end end;return r
 end
 local function scan()
  local cat=arr()
  for i,path in pairs(api.res.cargoTypeRep.getAll()) do if i~=0 then local c=api.res.cargoTypeRep.get(i);cat[#cat+1]={id=tostring(i),name=c.name,category='货物',description='交付时限 '..c.timeToDeliverInSeconds..' 秒',path=path} end end
  table.sort(cat,function(a,b)return a.name<b.name end);S.catalog=cat;S.stocks=stockOptions();S.worlds=arr()
- for _,e in pairs(entities(CT.TOWN)) do local c=component(e,CT.TOWN);S.worlds[#S.worlds+1]={id=tostring(e),name=name(e,'城镇'),category='城镇',res=c.initialLandUseCapacities[1],commercial=c.initialLandUseCapacities[2],industry=c.initialLandUseCapacities[3],description='城镇土地容量与镜头定位'} end
- for _,e in pairs(entities(CT.INDUSTRY)) do local c=component(e,CT.INDUSTRY);local sl=component(c.stockList,CT.STOCK_LIST);S.worlds[#S.worlds+1]={id=tostring(e),name=name(e,'产业'),category='产业',productivity=sl and sl.modifiers.productivity or 1,description='产业等级 '..c.level..' / '..c.maxLevel..' · 镜头定位'} end
+ for _,e in pairs(entities(CT.TOWN)) do local c=component(e,CT.TOWN);S.worlds[#S.worlds+1]={id=tostring(e),gameName=gameName(e) or '',name=name(e,'城镇'),category='城镇',res=c.initialLandUseCapacities[1],commercial=c.initialLandUseCapacities[2],industry=c.initialLandUseCapacities[3],description='城镇土地容量与镜头定位'} end
+ for _,e in pairs(entities(CT.INDUSTRY)) do local c=component(e,CT.INDUSTRY);local sl=component(c.stockList,CT.STOCK_LIST);S.worlds[#S.worlds+1]={id=tostring(e),gameName=gameName(e) or '',name=name(e,'产业'),category='产业',productivity=sl and sl.modifiers.productivity or 1,description='产业等级 '..c.level..' / '..c.maxLevel..' · 镜头定位'} end
  S.tasks=arr();local ms=scriptState('::/mission/mission.gs')
  if ms and ms.tasks then local util=module('mission/mission_framework/mission_framework_util')
  for _,t in pairs(ms.tasks) do local g=t.genericState
@@ -189,6 +211,44 @@ local function cameraData() local v=api.gui.camera.getCameraData();return {x=v.x
 local function dateValue(n)
  n=math.floor(n);local y=math.floor(n/10000);local m=math.floor(n/100)%100;local d=n%100;assert(y>=1850 and y<=2500 and m>=1 and m<=12,'日期必须在 1850–2500 年之间');local days={31,((y%4==0 and y%100~=0)or y%400==0)and 29 or 28,31,30,31,30,31,31,30,31,30,31};assert(d>=1 and d<=days[m],'日期不存在');return api.type.Date.new(y,m,d)
 end
+local function confirmRename()
+ local r=S.renameResult
+ if not r or (r.status~='pending' and r.status~='unconfirmed') then return end
+ if r.world~=S.world then S.renameResult=nil;return end
+ local e=tonumber(r.id);local ind=component(e,CT.INDUSTRY)
+ local matched=gameName(e)==r.name or ownName(e)==r.name or (ind and ownName(ind.construction)==r.name)
+ local getter=api.engine.util.getEntityNameStem
+ if not matched and isCallable(getter) then
+  local ok,stem=pcall(getter,e)
+  if ok then matched=stem==r.name or (type(stem)=='table' and stem[1]==r.name) end
+ end
+ if matched then
+  r.status='confirmed';S.lastMessage='已保存名称：'..r.name;S.nextScan=0
+ elseif r.status=='pending' and now()>=r.deadline then
+  r.status='unconfirmed';S.lastMessage='游戏尚未回读到新名称，请恢复模拟后刷新目录'
+ end
+end
+local function renameEntity(c)
+ local e=tonumber(c.id)
+ need(e and e==math.floor(e) and e>0 and (component(e,CT.TOWN) or component(e,CT.INDUSTRY)),'请选择当前地图中的城镇或产业')
+ need(c.world==nil or tonumber(c.world)==S.world,'地图已经切换，请重新选择目标')
+ need(type(c.name)=='string','名称必须是文本')
+ local value=c.name:gsub('^%s+',''):gsub('%s+$','')
+ need(#value>0 and #value<=256,'名称不能为空，且不能超过 256 个 UTF-8 字节')
+ need(not value:find('[%z\1-\31\127]'),'名称不能包含换行或控制字符')
+ local token=tostring(c.request or '')
+ need(#token<=80,'重命名请求标识无效')
+ local result={id=tostring(e),world=S.world,request=token,name=value,status='pending',deadline=now()+12}
+ S.renameResult=result;S.lastMessage='正在保存名称，等待游戏确认…'
+ -- Name this entity explicitly; do not rename a shared stem such as its town.
+ send(api.cmd.makeEntitySetNameCmd(e,value,true),function(success)
+  if S.renameResult~=result then return end
+  if not success then
+   result.status='failed';S.lastError='保存名称失败，游戏未接受命令';S.lastMessage=S.lastError
+  else confirmRename() end
+  S.nextScan=0
+ end)
+end
 function S.dispatch(c)
  assert(type(c)=='table','请求格式错误');if c.op=='read' then return S.tick(true) end;assert(S.player and component(S.player,CT.ACCOUNT),'请进入可运行地图')
  refreshCapabilities();if c.op~='reset' and c.op~='refresh' and not (c.op=='set' and not c.enabled) then requireCap(c.op=='set' and c.id or c.op) end
@@ -208,13 +268,14 @@ function S.dispatch(c)
  local state=scriptState('::/game_mechanics/finance/loan.gs');assert(state and state.obtainedLoans,'未找到贷款列表');assert(not S.financeHold,'上一笔资金操作尚未完成');local loans=state.obtainedLoans;local remaining=#loans;local refund=0;local m=module('game_mechanics/finance/loan_util')
  if remaining>0 then S.financeHold=true
  local function done(success,amount) if success then refund=refund+amount end;remaining=remaining-1;if remaining==0 then if refund>0 then book(refund,false,function()S.financeHold=nil;S.financeReset=true;S.financeResumeAt=now()+.45 end) else S.financeHold=nil;S.financeReset=true end end end
- for i,loan in ipairs(loans) do local payment,interest=m.getFullLoanAndInterestPayBack(loan);local amount=payment+(interest or 0);send(api.cmd.makeScriptingSendEventCmd('速智电玩','Loan','Repay',{i,loan}),function(success)done(success,amount)end) end end
+ for i,loan in ipairs(loans) do local payment,interest=m.getFullLoanAndInterestPayBack(loan);local amount=payment+(interest or 0);send(api.cmd.makeScriptingSendEventCmd('TF3Modifier','Loan','Repay',{i,loan}),function(success)done(success,amount)end) end end
  S.lastMessage=remaining>0 and '还款后补回资金的命令已提交' or '当前没有未清贷款'
  elseif c.op=='date' then send(api.cmd.makeGameSetDateCmd(dateValue(c.value)))
  elseif c.op=='days' then local gt=component(S.world,CT.GAME_TIME);local dt=api.engine.util.getCalendarDate(gt.gameTime);local leap=function(y)return (y%4==0 and y%100~=0)or y%400==0 end;local y,m,d=dt.year,dt.month,dt.day;local step=c.value>=0 and 1 or -1;local count=math.abs(math.floor(c.value));assert(count<=36500,'单次最多调整 36500 天');for i=1,count do local md={31,leap(y)and 29 or 28,31,30,31,30,31,31,30,31,30,31};d=d+step;if d>md[m] then d=1;m=m+1;if m>12 then m=1;y=y+1 end elseif d<1 then m=m-1;if m<1 then m=12;y=y-1 end;d=({31,leap(y)and 29 or 28,31,30,31,30,31,31,30,31,30,31})[m] end end;send(api.cmd.makeGameSetDateCmd(dateValue(y*10000+m*100+d)))
  elseif c.op=='daytime' then assert(c.value>=0 and c.value<24,'小时应在 0–24 之间');send(api.cmd.makeGameSetTimeOfDayCmd(math.floor(c.value*3600)))
  elseif c.op=='clouds' then assert(c.value>=0 and c.value<=1,'云量应在 0–1 之间');send(api.cmd.makeGameSetCloudCoverageCmd(c.value))
  elseif c.op=='add' then addCargo(c)
+ elseif c.op=='rename_entity' then renameEntity(c)
  elseif c.op=='town_capacity' then local e=tonumber(c.id);assert(component(e,CT.TOWN),'城镇已不存在');local v={c.res,c.commercial,c.industry};for _,n in ipairs(v) do assert(n>=1 and n<=100000,'容量应在 1–100000 之间') end;send(api.cmd.makeTownSetInitialLandUseCapacitiesCmd(e,v));S.nextScan=0
  elseif c.op=='industry_value' then local e=tonumber(c.id);local ind=component(e,CT.INDUSTRY);assert(ind,'产业已不存在');assert(c.value>=.05 and c.value<=100,'倍率应在 0.05–100 之间');local m=api.type.StockList.Modifiers.new();m.productivity=c.value;send(api.cmd.makeStockListSetModifiersCmd(ind.stockList,m));S.nextScan=0
  elseif c.op=='focus' then S.previousCamera=cameraData();api.gui.camera.focusEntity(tonumber(c.id));S.lastMessage='已定位镜头'
@@ -227,13 +288,15 @@ end
 function S.tick(active)
  local coreOK,coreError=pcall(function()funcs({'api.engine.entityExists','api.engine.getComponent','api.engine.getEntitiesWithComponent','api.engine.util.getPlayer','api.engine.util.getWorld','api.util.getApplicationTime'}) end);if not coreOK then return json({playing=false,settings={},capabilities={},message='等待地图核心接口验证',error=tostring(coreError)}) end
  local ok,player=pcall(api.engine.util.getPlayer);local w=api.engine.util.getWorld();local a=ok and component(player,CT.ACCOUNT)
- if not a then S.settings={};S.backups={};S.jobs={};S.speedBackup=nil;S.pendingFinance=nil;S.player=nil;return json({playing=false,settings={},capabilities=S.capabilities,message='请进入可运行地图'}) end
- if S.player and (S.player~=player or S.world~=w) then S.settings={};S.backups={};S.jobs={};S.speedBackup=nil;S.nextScan=0 end
+ if not a then S.settings={};S.backups={};S.jobs={};S.speedBackup=nil;S.pendingFinance=nil;S.renameResult=nil;S.nameScope=nil;S.player=nil;return json({playing=false,settings={},capabilities=S.capabilities,message='请进入可运行地图'}) end
+ if S.player and (S.player~=player or S.world~=w) then S.settings={};S.backups={};S.jobs={};S.speedBackup=nil;S.renameResult=nil;S.nameScope=nil;S.nextScan=0 end
  S.player=player;S.world=w
+ if not S.nameScope then S.nameScope=string.format('%.9f:%s',now(),tostring(w)) end
  local baseOK,baseError=pcall(function()fields(a,{'balance','loan'},'ACCOUNT');fields(component(w,CT.GAME_TIME),{'gameTime','timeOfDaySec'},'GAME_TIME');fields(component(w,CT.GAME_SPEED),{'millisPerDay','speedup'},'GAME_SPEED') end);if not baseOK then return json({playing=false,settings={},capabilities={},message='当前地图组件尚未通过验证',error=tostring(baseError)}) end
  if not active and next(S.settings) then restoreAll() end
  local t=now();local gt=component(w,CT.GAME_TIME);local gs=component(w,CT.GAME_SPEED)
  if t>=(S.nextCapability or 0) then refreshCapabilities() end
+ confirmRename()
  for i=#S.jobs,1,-1 do local job=S.jobs[i];if t>=job.at then event('Companies','applyLevel',{level=job.level});table.remove(S.jobs,i) end end
  if active then
  local delta=0
@@ -250,7 +313,7 @@ function S.tick(active)
  end
  if t>=S.nextScan then local success,err=pcall(scan);if not success then S.lastError=tostring(err);S.nextScan=t+3 end end
  local date={year=0,month=0,day=0};local dateOK,dateRead=pcall(function()return api.engine.util.getCalendarDate(gt.gameTime) end);if dateOK and dateRead then date=dateRead end;local rank={level=0,potentialLevel=0,experience=0};local rankOK,rankRead=pcall(company);if rankOK and rankRead then rank=rankRead end;local cam={};if S.capabilities.camera and S.capabilities.camera.supported then cam=cameraData() end;local world=component(w,CT.WORLD)
- return json({playing=true,player=player,world=w,balance=a.balance,loan=a.loan,rank=rank.level,potentialRank=rank.potentialLevel,experience=rank.experience,date=string.format('%04d-%02d-%02d',date.year,date.month,date.day),dateNumber=date.year*10000+date.month*100+date.day,dayLength=gs.millisPerDay,speed=gs.speedup,daytime=gt.timeOfDaySec/3600,clouds=world and world.cloudCoverage or nil,settings=S.settings,capabilities=S.capabilities,catalog=S.catalog,stocks=S.stocks,worlds=S.worlds,tasks=S.tasks,camera=cam,message=S.lastMessage,error=S.lastError,diagnostics={version=S.version,protocol=S.protocol,commands=S.commandCount,backups=(function()local n=0;for k in pairs(S.backups)do n=n+1 end;return n end)()}})
+ return json({playing=true,player=player,world=w,nameScope=S.nameScope,balance=a.balance,loan=a.loan,rank=rank.level,potentialRank=rank.potentialLevel,experience=rank.experience,date=string.format('%04d-%02d-%02d',date.year,date.month,date.day),dateNumber=date.year*10000+date.month*100+date.day,dayLength=gs.millisPerDay,speed=gs.speedup,daytime=gt.timeOfDaySec/3600,clouds=world and world.cloudCoverage or nil,settings=S.settings,capabilities=S.capabilities,catalog=S.catalog,stocks=S.stocks,worlds=S.worlds,tasks=S.tasks,camera=cam,renameResult=S.renameResult,message=S.lastMessage,error=S.lastError,diagnostics={version=S.version,protocol=S.protocol,commands=S.commandCount,backups=(function()local n=0;for k in pairs(S.backups)do n=n+1 end;return n end)()}})
 end
 rawset(_G,'__SZTF3F6',S)
 return '{}'

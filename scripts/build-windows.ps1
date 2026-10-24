@@ -79,7 +79,20 @@ try {
         throw '运行时 Lua 脚本与源码不一致。'
     }
 
+    $layoutReport = Join-Path $buildRoot 'layout-check.json'
+    $check = Start-Process -FilePath $mainPath -ArgumentList @('--layout-check', ('"' + $layoutReport + '"')) -PassThru
+    try {
+        if (-not $check.WaitForExit(45000)) { $check.Kill(); throw '离线界面布局检查超时。' }
+        if ($check.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $layoutReport)) {
+            if (Test-Path -LiteralPath $layoutReport) { Write-Host ([IO.File]::ReadAllText($layoutReport)) }
+            throw '离线界面布局检查未通过。'
+        }
+        $layoutChecks = @([IO.File]::ReadAllText($layoutReport) | ConvertFrom-Json)
+        Write-Host ('离线布局检查通过：' + $layoutChecks.Count + ' 项；未连接游戏。')
+    } finally { $check.Dispose() }
+
     Copy-PackageFile $mainPath $mainName
+    Copy-PackageFile ($mainPath + '.config') ($mainName + '.config')
     Copy-PackageFile $runtimePath ('运行模块/' + $runtimeName)
     Copy-PackageFile $luaPath ('运行模块/' + $luaName)
     Copy-PackageFile (Join-Path $repositoryRoot 'docs/使用说明.txt') '使用说明.txt'
@@ -94,7 +107,7 @@ try {
                 sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             }
         })
-    $verification = '完成源码编译、x64 PE、版本、Lua 一致性与 ZIP 文件校验；未运行游戏，不代表游戏功能已实测。'
+    $verification = '完成源码编译、x64 PE、版本、Lua 一致性、离线界面布局与 ZIP 校验；未连接游戏，不代表游戏功能已实测。'
     $manifest = [ordered]@{
         product = '狂热运输3修改器'
         version = $version

@@ -1,0 +1,421 @@
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+using TransportFever3.Interop;
+
+namespace TransportFever3Trainer
+{
+    sealed class MainForm : WindowChrome
+    {
+        sealed class RequestItem { public object Command; public Action<bool, string> Completed; }
+        public readonly UserPrefs Prefs = UserPrefs.Load();
+        public Dictionary<string, object> State = new Dictionary<string, object>();
+        public string StateJson { get { return Data.Json.Serialize(State); } }
+        public bool CaptureReady { get { return bridge != null && bridge.Ready && Data.Bool(State, "playing"); } }
+        public bool Busy { get { return sending || requests.Count > 0; } }
+        public int DisplayNameRevision { get; private set; }
+        public string NameScope { get { return !Data.Bool(State, "playing") ? "" : (bridge == null ? "preview" : bridge.ProcessStartTicks.ToString(CultureInfo.InvariantCulture)) + ":" + Data.Str(State, "nameScope"); } }
+        readonly bool offline;
+        Bridge bridge; bool connecting, sending, closing, arranging;
+        readonly Queue<RequestItem> requests = new Queue<RequestItem>(); RequestItem activeRequest;
+        readonly Surface header = new Surface();
+        readonly Panel pages = new Panel();
+        readonly FlowLayoutPanel navigationBar = new FlowLayoutPanel(), actions = new FlowLayoutPanel();
+        readonly Label heading, stats, status, online;
+        readonly AppMark mark = new AppMark();
+        readonly PillButton connect, reset;
+        readonly ToolTip tooltips = new ToolTip();
+        readonly Dictionary<string, FeatureCard> cards = new Dictionary<string, FeatureCard>();
+        readonly Dictionary<string, Panel> sections = new Dictionary<string, Panel>();
+        readonly Dictionary<string, Panel> pageViews = new Dictionary<string, Panel>();
+        readonly Dictionary<string, PillButton> navigation = new Dictionary<string, PillButton>();
+        readonly List<CatalogPage> catalogs = new List<CatalogPage>();
+        readonly Dictionary<int, string> hotkeys = new Dictionary<int, string>();
+        readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer { Interval = 150 };
+        Panel featurePage, featureScroll, featuresContent;
+        FlowLayoutPanel groups;
+        CameraPage camera; TextBox diagnosis;
+        string page = "features", group = "全部", lastSnapshot = "";
+        int P(int n) { return Ui.Px(this, n); }
+        protected override Size MinimumLogicalSize { get { return new Size(620, 440); } }
+        public static Label LabelFor(string text, float size = 10, bool bold = false)
+        { return new Label { Text = text, ForeColor = Theme.Ink, Font = Theme.F(size, bold), BackColor = Color.Transparent, AutoSize = false, AutoEllipsis = true, UseMnemonic = false }; }
+        public static void Enable(Control control, bool value) { if (control.Enabled != value) control.Enabled = value; }
+
+        public MainForm(bool forCapture = false, bool offlineCheck = false)
+        {
+            offline = offlineCheck; Text = "狂热运输3修改器 · v" + Protocol.Version; ClientSize = new Size(1220, 780);
+            heading = LabelFor("常用功能", 20, true); heading.Name = "page-heading";
+            stats = LabelFor("连接游戏后显示公司与时间信息", 10); stats.ForeColor = Theme.Muted;
+            online = LabelFor("● 游戏未连接", 10); online.ForeColor = Theme.Muted;
+            status = LabelFor("请进入地图，再连接游戏。", 9); status.ForeColor = Theme.Muted; status.Name = "status-message";
+            header.Controls.Add(mark); header.Controls.Add(heading); header.Controls.Add(stats); header.Controls.Add(online);
+            Controls.Add(header); Controls.Add(navigationBar); Controls.Add(actions); Controls.Add(pages); Controls.Add(status);
+            pages.BackColor = navigationBar.BackColor = actions.BackColor = Theme.Back;
+            navigationBar.WrapContents = actions.WrapContents = true;
+            string[] names = { "常用功能", "货物添加", "世界管理", "镜头书签", "诊断" }, ids = { "features", "cargo", "world", "camera", "diagnostics" };
+            for (int i = 0; i < names.Length; i++)
+            {
+                string id = ids[i]; var button = new PillButton { Text = names[i], Name = "navigation-" + id };
+                button.Click += delegate { ShowPage(id); }; navigation[id] = button; navigationBar.Controls.Add(button);
+            }
+            connect = new PillButton { Text = "连接 / 刷新", Primary = true, Name = "connect-game" };
+            connect.Click += delegate { ConnectGame(); }; actions.Controls.Add(connect);
+            reset = new PillButton { Text = "关闭全部功能", Name = "reset-features" };
+            reset.Click += delegate { Request(new { op = "reset" }); }; actions.Controls.Add(reset);
+            BuildFeatures();
+            foreach (string kind in new[] { "cargo", "world" })
+            { var catalog = new CatalogPage(this, kind) { Dock = DockStyle.Fill }; catalogs.Add(catalog); AddPage(kind, catalog); }
+            camera = new CameraPage(this) { Dock = DockStyle.Fill }; AddPage("camera", camera);
+            var diagnosticsPage = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12), BackColor = Theme.Card };
+            diagnosis = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BorderStyle = BorderStyle.FixedSingle,
+                BackColor = Theme.Card, ForeColor = Theme.Ink, Font = Theme.F(10), Dock = DockStyle.Fill };
+            var export = new PillButton { Text = "导出诊断", Dock = DockStyle.Bottom, Height = 40, Name = "export-diagnostics" };
+            export.Click += delegate {
+                using (var dialog = new SaveFileDialog { Filter = "JSON 诊断|*.json", FileName = "狂热运输3-诊断.json" })
+                    if (dialog.ShowDialog(this) == DialogResult.OK) File.WriteAllText(dialog.FileName, StateJson, System.Text.Encoding.UTF8);
+            };
+            diagnosticsPage.Controls.Add(diagnosis); diagnosticsPage.Controls.Add(export); AddPage("diagnostics", diagnosticsPage);
+            SizeChanged += delegate { Arrange(); };
+            DpiChanged += delegate { Arrange(); };
+            timer.Tick += delegate { Poll(); };
+            Shown += delegate { Arrange(); if (!offline) { RegisterKeys(); timer.Start(); ConnectGame(); } };
+            FormClosing += delegate {
+                closing = true; timer.Stop(); foreach (int id in hotkeys.Keys) Native.UnregisterHotKey(Handle, id);
+                if (bridge != null) bridge.Dispose(); tooltips.Dispose(); timer.Dispose();
+            };
+            ShowPage("features"); UpdateState(); Arrange();
+        }
+        protected override void OnLayout(LayoutEventArgs e) { base.OnLayout(e); Arrange(); }
+        void AddPage(string id, Panel panel) { panel.Visible = false; pages.Controls.Add(panel); pageViews[id] = panel; }
+        void Arrange()
+        {
+            if (arranging || heading == null || camera == null) return; arranging = true;
+            try
+            {
+                int pad = P(16), w = Math.Max(1, ClientSize.Width - pad * 2); bool wide = w >= P(900);
+                header.SetBounds(pad, pad, w, P(wide ? 92 : 128));
+                mark.SetBounds(P(18), P(20), P(44), P(44));
+                heading.SetBounds(P(78), P(14), Math.Max(1, wide ? w / 2 - P(88) : w - P(96)), P(36));
+                online.SetBounds(P(80), P(54), Math.Max(1, wide ? w / 2 - P(88) : w - P(100)), P(24));
+                if (wide) stats.SetBounds(w / 2 + P(16), P(20), w / 2 - P(36), P(58));
+                else stats.SetBounds(P(80), P(86), Math.Max(1, w - P(100)), P(34));
+                foreach (PillButton button in navigationBar.Controls)
+                { button.Size = new Size(P(114), P(35)); button.Margin = new Padding(0, 0, P(8), P(7)); }
+                navigationBar.SetBounds(pad, header.Bottom + P(10), w, Ui.FlowHeight(navigationBar, w, P(42)));
+                foreach (PillButton button in actions.Controls)
+                { button.Size = new Size(P(150), P(35)); button.Margin = new Padding(0, 0, P(8), P(7)); }
+                actions.SetBounds(pad, navigationBar.Bottom + P(2), w, Ui.FlowHeight(actions, w, P(42)));
+                int pageTop = actions.Bottom + P(6), footer = P(28);
+                pages.SetBounds(pad, pageTop, w, Math.Max(1, ClientSize.Height - pageTop - pad - footer));
+                status.SetBounds(pad + P(2), ClientSize.Height - pad - footer + P(4), Math.Max(1, w - P(4)), footer);
+                ArrangeFeatures(); foreach (var catalog in catalogs) catalog.Arrange(); camera.Arrange();
+            }
+            finally { arranging = false; }
+        }
+        void BuildFeatures()
+        {
+            featurePage = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Back };
+            groups = new FlowLayoutPanel { WrapContents = true, BackColor = Theme.Back };
+            featureScroll = new Panel { AutoScroll = true, BackColor = Theme.Back };
+            featuresContent = new Panel { BackColor = Theme.Back, Tag = "scroll-content" };
+            featurePage.Controls.Add(groups); featurePage.Controls.Add(featureScroll); featureScroll.Controls.Add(featuresContent);
+            AddPage("features", featurePage);
+            var specs = Data.Rows(Data.Json.DeserializeObject(Data.Resource("Features.json")));
+            foreach (string category in new[] { "全部" }.Concat(specs.Select(x => Data.Str(x, "group")).Distinct()))
+            {
+                string value = category; var button = new PillButton { Text = category, Name = "feature-group" };
+                button.Click += delegate { SetGroup(value); }; groups.Controls.Add(button);
+            }
+            foreach (var spec in specs)
+            {
+                string category = Data.Str(spec, "group"); Panel section;
+                if (!sections.TryGetValue(category, out section))
+                { section = new Panel { BackColor = Theme.Back }; section.Controls.Add(LabelFor(category, 11, true)); sections[category] = section; featuresContent.Controls.Add(section); }
+                var card = new FeatureCard(spec); card.Requested += FeatureRequested; card.KeyRequested += BindKey;
+                cards[card.Id] = card; section.Controls.Add(card);
+            }
+        }
+        void SetGroup(string value)
+        {
+            group = value; foreach (PillButton button in groups.Controls) button.Primary = button.Text == value;
+            foreach (var section in sections) section.Value.Visible = value == "全部" || section.Key == value;
+            featureScroll.AutoScrollPosition = Point.Empty; ArrangeFeatures();
+        }
+        void ArrangeFeatures()
+        {
+            if (featurePage == null || featurePage.Width < 1) return;
+            foreach (PillButton button in groups.Controls)
+            { button.Size = new Size(P(button.Text == "全部" ? 68 : 130), P(32)); button.Margin = new Padding(0, 0, P(7), P(7)); button.Primary = button.Text == group; }
+            groups.SetBounds(0, P(4), featurePage.Width, Ui.FlowHeight(groups, featurePage.Width, P(39)));
+            featureScroll.SetBounds(0, groups.Bottom + P(8), featurePage.Width, Math.Max(1, featurePage.Height - groups.Bottom - P(8)));
+            var offset = featureScroll.AutoScrollPosition;
+            int width = Math.Max(1, featureScroll.ClientSize.Width - P(19)), gap = P(16), y = 0;
+            int columns = Ui.FeatureColumns(this, width), cardWidth = Math.Max(1, (width - (columns - 1) * gap) / columns);
+            foreach (var pair in sections)
+            {
+                bool visible = group == "全部" || group == pair.Key; pair.Value.Visible = visible; if (!visible) continue;
+                var items = pair.Value.Controls.OfType<FeatureCard>().ToList();
+                int rows = (items.Count + columns - 1) / columns;
+                pair.Value.SetBounds(0, y, width, P(40) + rows * P(142));
+                pair.Value.Controls.OfType<Label>().First().SetBounds(P(4), P(5), Math.Max(1, width - P(8)), P(28));
+                for (int i = 0; i < items.Count; i++) items[i].SetBounds((i % columns) * (cardWidth + gap), P(40) + (i / columns) * P(142), cardWidth, P(126));
+                y += pair.Value.Height + P(8);
+            }
+            featuresContent.SetBounds(0, 0, width, y); featureScroll.AutoScrollMinSize = new Size(0, y);
+            featureScroll.AutoScrollPosition = new Point(-offset.X, -offset.Y);
+        }
+        public void ShowPage(string id)
+        {
+            if (id.StartsWith("features:")) { SetGroup(id.Substring(9)); id = "features"; }
+            if (!pageViews.ContainsKey(id)) id = "features"; page = id;
+            foreach (var view in pageViews) view.Value.Visible = view.Key == id;
+            foreach (var button in navigation) button.Value.Primary = button.Key == id;
+            heading.Text = id == "features" ? "常用功能 · " + cards.Count : id == "cargo" ? "货物添加" : id == "world" ? "世界管理" : id == "camera" ? "镜头书签" : "连接诊断";
+            Arrange();
+        }
+        public void SelectFirst() { foreach (var catalog in catalogs) catalog.SelectFirst(); }
+        public void Notify(string text) { if (closing) return; status.Text = text; tooltips.SetToolTip(status, text); }
+        public bool IsAvailable(string id) { return CaptureReady && Data.Bool(Data.Get(Data.Get(State, "capabilities"), id), "supported"); }
+        public string UnavailableReason(string id) { return Data.Str(Data.Get(Data.Get(State, "capabilities"), id), "reason", "当前接口尚未通过验证"); }
+        public void ConnectGame()
+        {
+            if (offline || connecting || sending || closing) return;
+            if (bridge != null && bridge.Ready) { Request(new { op = "refresh" }); return; }
+            connecting = true; Enable(connect, false); Notify("正在连接游戏…"); var candidate = new Bridge();
+            Task.Run(delegate {
+                try
+                {
+                    candidate.Connect(); if (closing) { candidate.Dispose(); return; }
+                    BeginInvoke((Action)delegate { if (closing) { candidate.Dispose(); return; } if (bridge != null) bridge.Dispose(); bridge = candidate; connecting = false; Enable(connect, true); lastSnapshot = ""; Notify("已连接游戏"); Poll(); });
+                }
+                catch (Exception e) { candidate.Dispose(); if (closing) return; BeginInvoke((Action)delegate { if (!closing) { connecting = false; Enable(connect, true); Notify(e.Message); } }); }
+            });
+        }
+        public void Request(object command, Action<bool, string> completed = null)
+        {
+            string error = null;
+            if (!CaptureReady) error = "请先连接游戏并进入地图。";
+            else
+            {
+                var data = Data.Obj(Data.Json.DeserializeObject(Data.Json.Serialize(command))); string op = Data.Str(data, "op"), id = op == "set" ? Data.Str(data, "id") : op;
+                if (op != "reset" && op != "refresh" && !(op == "set" && !Data.Bool(data, "enabled")) && !IsAvailable(id)) error = UnavailableReason(id);
+            }
+            if (error != null) { Notify(error); if (completed != null) completed(false, error); return; }
+            requests.Enqueue(new RequestItem { Command = command, Completed = completed }); SendNext();
+        }
+        void CancelQueued(string message)
+        { while (requests.Count > 0) { var entry = requests.Dequeue(); if (entry.Completed != null) entry.Completed(false, message); } }
+        void SendNext()
+        {
+            if (sending || requests.Count == 0 || bridge == null) return;
+            activeRequest = requests.Dequeue();
+            try { bridge.Send("return __SZTF3F6.dispatch(" + Data.LuaObject(activeRequest.Command) + ")"); sending = true; Notify("正在提交操作…"); }
+            catch (Exception e) { var entry = activeRequest; activeRequest = null; Notify(e.Message); if (entry.Completed != null) entry.Completed(false, e.Message); CancelQueued(e.Message); }
+        }
+        void FeatureRequested(FeatureCard card)
+        {
+            if (card.Kind == "action" || card.Kind == "number_action") Request(new { op = card.Id, value = card.Number.Value });
+            else Request(new { op = "set", id = card.Id, enabled = card.Toggle.Checked, value = card.Kind == "value" ? card.Number.Value : 1 });
+        }
+        void Poll()
+        {
+            if (bridge == null || connecting || closing) return;
+            try
+            {
+                bridge.Poll();
+                if (sending && !bridge.Pending)
+                {
+                    sending = false; var entry = activeRequest; activeRequest = null; bool success = bridge.LastResult == 1;
+                    string message = success ? Data.Str(Data.Json.DeserializeObject(bridge.Response), "message", "操作完成") : bridge.Response;
+                    Notify(message); if (entry != null && entry.Completed != null) entry.Completed(success, message);
+                    if (!success) CancelQueued(message); SendNext();
+                }
+                if (lastSnapshot != bridge.Snapshot)
+                {
+                    lastSnapshot = bridge.Snapshot; State = Data.Obj(Data.Json.DeserializeObject(lastSnapshot));
+                    string runtimeVersion = Data.Str(Data.Get(State, "diagnostics"), "version");
+                    if (runtimeVersion.Length > 0 && runtimeVersion != Protocol.Version)
+                        throw new InvalidOperationException("旧版运行模块仍在游戏进程中，请完全退出游戏后重新连接。");
+                    State["connection"] = new { pid = bridge.Pid, processStartTicks = bridge.ProcessStartTicks, path = bridge.GamePath, gameVersion = bridge.GameVersion,
+                        steamBuild = bridge.GameBuild, pe = bridge.PeFingerprint, runtimeProtocol = Protocol.RuntimeProtocol };
+                    UpdateState();
+                }
+                foreach (var catalog in catalogs) catalog.UpdateActions(); camera.UpdateState(); Enable(reset, CaptureReady && !Busy);
+            }
+            catch (Exception e)
+            {
+                Notify(e.Message); bridge.Dispose(); bridge = null; State = new Dictionary<string, object>(); sending = false;
+                if (activeRequest != null && activeRequest.Completed != null) activeRequest.Completed(false, e.Message);
+                activeRequest = null; CancelQueued(e.Message); UpdateState();
+            }
+        }
+        void UpdateState()
+        {
+            bool playing = CaptureReady; online.Text = playing ? "● 游戏已连接" : "● 游戏未连接"; online.ForeColor = playing ? Theme.Green : Theme.Muted;
+            stats.Text = playing ? "结余 " + Data.Num(State, "balance").ToString("N0") + " · 贷款 " + Data.Num(State, "loan").ToString("N0") + " · 等级 " + Data.Num(State, "rank") +
+                "\r\n" + Data.Str(State, "date") + " · 模拟 " + Data.Num(State, "speed") + "x · 经验 " + Data.Num(State, "experience").ToString("N0") : "请打开游戏，进入地图后连接。";
+            var settings = Data.Obj(Data.Get(State, "settings")); var caps = Data.Obj(Data.Get(State, "capabilities"));
+            foreach (var item in cards)
+            { object value; bool enabled = settings.TryGetValue(item.Key, out value); if (!Busy) item.Value.State(enabled, value); item.Value.Capability(Data.Get(caps, item.Key), playing); }
+            foreach (var catalog in catalogs) { catalog.UpdateRows(Data.Get(State, catalog.Kind == "cargo" ? "catalog" : "worlds")); catalog.UpdateStocks(); }
+            if (camera != null) camera.UpdateState(); Enable(reset, playing && !Busy);
+            if (diagnosis != null)
+            {
+                var d = Data.Get(State, "diagnostics");
+                string text = "狂热运输3修改器 · v" + Protocol.Version + "\r\n\r\n" + (bridge == null ? "尚未连接" : bridge.IdentityText) + "\r\n\r\n" +
+                    "可用功能：" + cards.Keys.Count(id => Data.Bool(Data.Get(caps, id), "supported")) + " / " + cards.Count +
+                    "\r\n货物：" + Data.Rows(Data.Get(State, "catalog")).Count + "\r\n城镇 / 产业：" + Data.Rows(Data.Get(State, "worlds")).Count +
+                    "\r\n命令计数：" + Data.Num(d, "commands") + "\r\n待恢复参数：" + Data.Num(d, "backups") +
+                    "\r\n\r\n状态：" + Data.Str(State, "message") + "\r\n错误：" + Data.Str(State, "error", "无") +
+                    "\r\n\r\n游戏名称优先；读不到时可设置本工具当前地图会话的显示名称。" +
+                    "\r\n保存到游戏的名称随游戏存档保留。资金、经验、日期和其他一次性修改不会随开关关闭而撤销。";
+                foreach (var item in caps) if (!Data.Bool(item.Value, "supported")) text += "\r\n" + item.Key + "：" + Data.Str(item.Value, "reason");
+                if (diagnosis.Text != text) diagnosis.Text = text;
+            }
+        }
+        string NameKey(object row) { return NameScope + "/" + Data.Str(row, "nameEntity", Data.Str(row, "id")); }
+        public string DisplayName(Dictionary<string, object> row)
+        {
+            string game = Data.Str(row, "gameName"); if (game.Length > 0) return game;
+            bool entity = row.ContainsKey("nameEntity") || Data.Str(row, "category") == "城镇" || Data.Str(row, "category") == "产业";
+            string local; if (entity && NameScope.Length > 0 && Prefs.displayNames.TryGetValue(NameKey(row), out local) && local.Length > 0) return local;
+            return Data.Str(row, "name", "未命名");
+        }
+        public void SaveDisplayName(Dictionary<string, object> row, string value)
+        {
+            if (NameScope.Length == 0 || Data.Str(row, "gameName").Length > 0) return;
+            Prefs.displayNames[NameKey(row)] = value; SavePrefs(); DisplayNameRevision++;
+            foreach (var catalog in catalogs) catalog.InvalidateNames(); Notify("已保存显示名称，仅用于当前地图会话。");
+        }
+        public void SavePrefs() { try { Prefs.Save(); } catch (Exception e) { Notify("设置保存失败：" + e.Message); } }
+        public void Remember(string kind, string id)
+        { var recent = Prefs.Set(kind, true); recent.Remove(id); recent.Insert(0, id); if (recent.Count > 30) recent.RemoveRange(30, recent.Count - 30); SavePrefs(); }
+        void BindKey(FeatureCard card)
+        {
+            int key; Prefs.keys.TryGetValue(card.Id, out key);
+            using (var dialog = new KeyDialog(Data.Str(card.Spec, "name"), (Keys)key))
+                if (dialog.ShowDialog(this) == DialogResult.OK)
+                {
+                    if (dialog.Selected == Keys.None) Prefs.keys.Remove(card.Id);
+                    else { if (Prefs.keys.Any(p => p.Key != card.Id && p.Value == (int)dialog.Selected)) { Notify("该快捷键已绑定其他功能。"); return; } Prefs.keys[card.Id] = (int)dialog.Selected; }
+                    SavePrefs(); RegisterKeys();
+                }
+        }
+        void RegisterKeys()
+        {
+            if (offline) return; foreach (int id in hotkeys.Keys) Native.UnregisterHotKey(Handle, id); hotkeys.Clear(); int next = 100;
+            foreach (var card in cards)
+            {
+                int key; if (!Prefs.keys.TryGetValue(card.Key, out key)) { card.Value.Hotkey.Text = "设置快捷键"; continue; }
+                Keys value = (Keys)key; uint modifiers = 0x4000;
+                if ((value & Keys.Control) != 0) modifiers |= 2; if ((value & Keys.Shift) != 0) modifiers |= 4; if ((value & Keys.Alt) != 0) modifiers |= 1;
+                if (Native.RegisterHotKey(Handle, next, modifiers, (uint)(value & Keys.KeyCode))) { hotkeys[next++] = card.Key; card.Value.Hotkey.Text = new KeysConverter().ConvertToString(value); }
+                else { card.Value.Hotkey.Text = "绑定冲突"; Notify("快捷键被占用，请重新绑定。"); }
+            }
+        }
+        protected override void WndProc(ref Message message)
+        {
+            if (message.Msg == 0x312)
+            {
+                string id;
+                if (hotkeys.TryGetValue(message.WParam.ToInt32(), out id) && CaptureReady && !Busy && cards[id].Supported)
+                { var card = cards[id]; if (card.Kind == "action" || card.Kind == "number_action") FeatureRequested(card); else card.Toggle.Checked = !card.Toggle.Checked; }
+            }
+            base.WndProc(ref message);
+        }
+        public bool ValidateLayout(string output)
+        {
+            var report = new List<object>();
+            try
+            {
+                if (!offline || bridge != null) throw new InvalidOperationException("布局检查必须与游戏连接隔离。");
+                var preview = new { playing = true, world = 1, nameScope = "layout", catalog = new[] { new { id = "1", name = "原油", category = "货物", description = "货物示例" } },
+                    worlds = new object[] { new { id = "20", name = "北港采油平台", gameName = "北港采油平台", category = "产业", productivity = 1, description = "产业名称读取示例" },
+                        new { id = "21", name = "新港", gameName = "新港", category = "城镇", res = 500, commercial = 200, industry = 200, description = "城镇示例" },
+                        new { id = "22", name = "采油平台", gameName = "", category = "产业", productivity = 1, description = "名称读取回退示例" } },
+                    stocks = new[] { new { id = "30", nameEntity = "20", name = "北港采油平台", gameName = "北港采油平台", slots = new[] { new { allowed = new[] { "1" } } } } } };
+                State = Data.Obj(Data.Json.DeserializeObject(Data.Json.Serialize(preview))); UpdateState(); SelectFirst(); MinimumSize = Size.Empty;
+                var unnamed = Data.Rows(Data.Get(State, "worlds"))[2]; string aliasKey = NameKey(unnamed), previousAlias;
+                bool hadAlias = Prefs.displayNames.TryGetValue(aliasKey, out previousAlias);
+                try
+                {
+                    Prefs.displayNames[aliasKey] = "本机显示名称";
+                    if (DisplayName(unnamed) != "本机显示名称") throw new Exception("名称回退异常");
+                    unnamed["gameName"] = "游戏名称";
+                    if (DisplayName(unnamed) != "游戏名称") throw new Exception("游戏名称优先级异常");
+                    unnamed["gameName"] = ""; State["nameScope"] = "different-map";
+                    if (DisplayName(unnamed) != "采油平台") throw new Exception("显示名称跨地图误用");
+                }
+                finally { unnamed["gameName"] = ""; State["nameScope"] = "layout"; if (hadAlias) Prefs.displayNames[aliasKey] = previousAlias; else Prefs.displayNames.Remove(aliasKey); }
+                report.Add(new { names = "game-first, fallback, map-isolation", pass = true });
+                var cases = new[] { new { w = 640, h = 480, scale = 1f }, new { w = 1280, h = 720, scale = 1f },
+                    new { w = 1366, h = 768, scale = 1.25f }, new { w = 1920, h = 1080, scale = 1.5f },
+                    new { w = 1920, h = 1080, scale = 2f }, new { w = 2560, h = 1440, scale = 1f }, new { w = 2560, h = 1440, scale = 2f } };
+                foreach (var test in cases)
+                {
+                    Ui.LayoutTestScale = test.scale; ClientSize = new Size(test.w, test.h);
+                    foreach (string id in pageViews.Keys)
+                    {
+                        ShowPage(id); SelectFirst(); Arrange(); Application.DoEvents(); var issues = new List<string>(); Audit(this, issues);
+                        if (issues.Count > 0) throw new InvalidOperationException(id + " " + test.w + "x" + test.h + ": " + string.Join("; ", issues));
+                        report.Add(new { page = id, width = test.w, height = test.h, layoutScale = test.scale, monitorDpi = DeviceDpi, pass = true });
+                        if (id == "world") foreach (int variant in new[] { 1, 2 })
+                        {
+                            catalogs.First(c => c.Kind == "world").SelectForLayoutCheck(variant); Arrange(); Application.DoEvents();
+                            issues.Clear(); Audit(this, issues); if (issues.Count > 0) throw new Exception(string.Join("; ", issues));
+                            report.Add(new { page = id, variant = variant, width = test.w, height = test.h, layoutScale = test.scale, pass = true });
+                        }
+                    }
+                }
+                File.WriteAllText(output, Data.Json.Serialize(report), System.Text.Encoding.UTF8); return true;
+            }
+            catch (Exception e) { report.Add(new { error = e.ToString(), pass = false }); File.WriteAllText(output, Data.Json.Serialize(report), System.Text.Encoding.UTF8); return false; }
+            finally { Ui.LayoutTestScale = 0; }
+        }
+        static void Audit(Control parent, List<string> issues)
+        {
+            var scroll = parent as ScrollableControl; bool canScroll = scroll != null && scroll.AutoScroll;
+            foreach (Control child in parent.Controls)
+            {
+                if (!child.Visible) continue;
+                if (child.Name.Length > 0 && !canScroll && (child.Left < -2 || child.Top < -2 || child.Right > parent.ClientSize.Width + 2 || child.Bottom > parent.ClientSize.Height + 2))
+                    issues.Add(child.Name + " exceeds " + parent.GetType().Name);
+                Audit(child, issues);
+            }
+            if (parent is FeatureCard)
+            {
+                var controls = parent.Controls.Cast<Control>().Where(c => c.Visible && c.Name.Length > 0).ToList();
+                for (int i = 0; i < controls.Count; i++) for (int j = i + 1; j < controls.Count; j++)
+                    if (Rectangle.Intersect(controls[i].Bounds, controls[j].Bounds).Width > 2 && Rectangle.Intersect(controls[i].Bounds, controls[j].Bounds).Height > 2)
+                        issues.Add("overlap: " + controls[i].Name + " / " + controls[j].Name);
+            }
+        }
+        public async Task<bool> Regression(string output)
+        {
+            var log = new List<object>();
+            try
+            {
+                for (int i = 0; i < 600 && !CaptureReady; i++) await Task.Delay(50);
+                if (!CaptureReady) throw new Exception("连接失败");
+                if (cards.Count != 19 || navigation.Count != 5) throw new Exception("功能菜单数量异常");
+                ShowPage("features");
+                foreach (string id in new[] { "vehicle_speed", "productivity" })
+                {
+                    var card = cards[id]; card.Toggle.Checked = true; await WaitToggle(id, true);
+                    SetGroup(Data.Str(card.Spec, "group")); card.Toggle.Checked = false; await WaitToggle(id, false); SetGroup("全部");
+                    log.Add(new { id = id, pass = true });
+                }
+                File.WriteAllText(output, Data.Json.Serialize(log), System.Text.Encoding.UTF8); return true;
+            }
+            catch (Exception e) { log.Add(new { error = e.ToString() }); File.WriteAllText(output, Data.Json.Serialize(log), System.Text.Encoding.UTF8); return false; }
+        }
+        async Task WaitToggle(string id, bool value)
+        { for (int i = 0; i < 200; i++) { if (!Busy && Data.Obj(Data.Get(State, "settings")).ContainsKey(id) == value) return; await Task.Delay(50); } throw new Exception("开关状态未同步：" + id); }
+    }
+}

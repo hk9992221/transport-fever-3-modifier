@@ -69,9 +69,11 @@ jobs:
             ''
             '附件包含便携 ZIP 和 SHA-256 校验文件；运行模块与 Lua 脚本已包含在 ZIP 内。'
             ''
+            '浅色界面支持屏幕与 DPI 适配。优先读取游戏内名称；无法读取时支持本工具当前地图会话的显示名称。'
+            ''
             ("源码提交：https://github.com/${env:GH_REPO}/commit/${env:GITHUB_SHA}")
             ''
-            '构建完成编译、x64 架构、版本、脚本及 ZIP 完整性检查；未运行游戏，不代表游戏功能已实测。'
+            '构建完成编译、x64 架构、版本、脚本、离线布局及 ZIP 完整性检查；未运行游戏，不代表游戏功能已实测。'
           ) | Out-File -FilePath $notes -Encoding utf8
 
           $tagCommit = & gh api "repos/${env:GH_REPO}/commits/$tag" --jq '.sha' 2>$null

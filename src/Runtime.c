@@ -75,7 +75,7 @@ static int run(void*L,const char*code,int offset,int capacity){
   if(offset>=0){memcpy(shared+offset,error,length+1);if(offset==REPLY)wr(28,(uint32_t)length);else if(offset==STATE)wr(36,(uint32_t)length);}return 97;
  }
  memcpy(chunk,prefix,prefixLength);memcpy(chunk+prefixLength,code,codeLength+1);
- int status=loadbuffer(L,chunk,prefixLength+codeLength,"@速智电玩内存接口","t");free(chunk);
+ int status=loadbuffer(L,chunk,prefixLength+codeLength,"@TF3Modifier/runtime","t");free(chunk);
  if(!status)status=pcallfn(L,0,1,0,0,NULL);
  size_t n=0;const char*s=tolstring(L,-1,&n);if(!s){s=status?"脚本执行失败":"{}";n=strlen(s);}if(n>=(size_t)capacity){s="接口返回的数据过长";n=strlen(s);status=99;}if(offset>=0){memcpy(shared+offset,s,n);shared[offset+n]=0;if(offset==REPLY)wr(28,(uint32_t)n);else if(offset==STATE)wr(36,(uint32_t)n);}if(status)message(s);settop(L,top);return status;
 }

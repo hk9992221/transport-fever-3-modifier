@@ -22,6 +22,7 @@ static int tableCallable(uintptr_t value){
 }
 typedef struct {const char*expression;const char*keys[6];} CallablePath;
 static const CallablePath callablePaths[]={
+ {"api.cmd.makeEntitySetNameCmd",{"api","cmd","makeEntitySetNameCmd",NULL,NULL,NULL}},
  {"api.cmd.debug.makeStockSetCargoAmountCmd",{"api","cmd","debug","makeStockSetCargoAmountCmd",NULL,NULL}},
  {"api.cmd.makeGameSetCalendarSpeedCmd",{"api","cmd","makeGameSetCalendarSpeedCmd",NULL,NULL,NULL}},
  {"api.cmd.makeGameSetCloudCoverageCmd",{"api","cmd","makeGameSetCloudCoverageCmd",NULL,NULL,NULL}},
@@ -43,6 +44,8 @@ static const CallablePath callablePaths[]={
  {"api.engine.system.simEntityAtStockSystem.getStockCountForCargoType",{"api","engine","system","simEntityAtStockSystem","getStockCountForCargoType",NULL}},
  {"api.engine.util.finance.calcIncomeSince",{"api","engine","util","finance","calcIncomeSince",NULL}},
  {"api.engine.util.getCalendarDate",{"api","engine","util","getCalendarDate",NULL,NULL}},
+ {"api.engine.util.getEntityName",{"api","engine","util","getEntityName",NULL,NULL}},
+ {"api.engine.util.getEntityNameStem",{"api","engine","util","getEntityNameStem",NULL,NULL}},
  {"api.engine.util.getPlayer",{"api","engine","util","getPlayer",NULL,NULL}},
  {"api.engine.util.getWorld",{"api","engine","util","getWorld",NULL,NULL}},
  {"api.engine.util.stock.getStockCargoTypes",{"api","engine","util","stock","getStockCargoTypes",NULL}},

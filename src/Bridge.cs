@@ -1,4 +1,4 @@
-using System;using System.IO;using System.IO.MemoryMappedFiles;using System.Diagnostics;using System.Text;using System.Linq;using System.Runtime.InteropServices;using System.Threading;using Suzhi.TransportFever3;
+using System;using System.IO;using System.IO.MemoryMappedFiles;using System.Diagnostics;using System.Text;using System.Linq;using System.Runtime.InteropServices;using System.Threading;using TransportFever3.Interop;
 
 namespace TransportFever3Trainer {
 

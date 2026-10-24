@@ -1,1 +1,1 @@
-using System;namespace Suzhi.TransportFever3 {public static class Protocol {public const string MapPrefix="Local\\SZTransportFever3_v6_";public const int Magic=0x54463331,RuntimeProtocol=6,Size=2163248;public const string Version="1.0.5";} }
+using System;namespace TransportFever3.Interop {public static class Protocol {public const string MapPrefix="Local\\SZTransportFever3_v6_";public const int Magic=0x54463331,RuntimeProtocol=6,Size=2163248;public const string Version="1.1.0";} }
