@@ -7,15 +7,15 @@ namespace TransportFever3Trainer
 {
     static class Theme
     {
-        public static readonly Color Back = Color.FromArgb(244, 247, 251);
+        public static readonly Color Back = Color.FromArgb(245, 247, 250);
         public static readonly Color Panel = Color.White;
         public static readonly Color Card = Color.White;
         public static readonly Color Input = Color.FromArgb(241, 245, 249);
-        public static readonly Color Purple = Color.FromArgb(37, 99, 235);
-        public static readonly Color AccentSoft = Color.FromArgb(234, 241, 255);
-        public static readonly Color Line = Color.FromArgb(220, 229, 239);
-        public static readonly Color Ink = Color.FromArgb(23, 43, 69);
-        public static readonly Color Muted = Color.FromArgb(97, 117, 138);
+        public static readonly Color Purple = Color.FromArgb(48, 100, 216);
+        public static readonly Color AccentSoft = Color.FromArgb(234, 240, 252);
+        public static readonly Color Line = Color.FromArgb(226, 231, 238);
+        public static readonly Color Ink = Color.FromArgb(33, 43, 58);
+        public static readonly Color Muted = Color.FromArgb(111, 124, 141);
         public static readonly Color Green = Color.FromArgb(22, 124, 98);
         public static readonly Color Alternate = Color.FromArgb(248, 250, 252);
         public static Font F(float size = 10, bool bold = false)
@@ -35,6 +35,7 @@ namespace TransportFever3Trainer
     class Surface : Panel
     {
         public int Radius = 14;
+        public bool BorderVisible = true;
         public Surface() { DoubleBuffered = true; BackColor = Theme.Card; }
         protected override void OnPaint(PaintEventArgs e)
         {
@@ -44,17 +45,19 @@ namespace TransportFever3Trainer
             using (var path = Theme.Path(new Rectangle(0, 0, Width - 1, Height - 1), Ui.Px(this, Radius)))
             using (var brush = new SolidBrush(BackColor))
             using (var pen = new Pen(Theme.Line))
-            { e.Graphics.FillPath(brush, path); e.Graphics.DrawPath(pen, path); }
+            { e.Graphics.FillPath(brush, path); if (BorderVisible) e.Graphics.DrawPath(pen, path); }
         }
     }
     class PillButton : Control, IButtonControl
     {
         bool primary, hovered, pressed, spaceDown, isDefault;
         public bool Primary { get { return primary; } set { if (primary != value) { primary = value; Invalidate(); } } }
+        public bool Navigation { get; set; }
+        public bool Subtle { get; set; }
         public DialogResult DialogResult { get; set; }
         public PillButton()
         {
-            BackColor = Theme.Card; ForeColor = Theme.Ink; Font = Theme.F(10, true);
+            BackColor = Theme.Card; ForeColor = Theme.Ink; Font = Theme.F(9);
             Cursor = Cursors.Hand; Height = 36; TabStop = true; AccessibleRole = AccessibleRole.PushButton;
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
                 ControlStyles.ResizeRedraw | ControlStyles.Opaque | ControlStyles.Selectable | ControlStyles.StandardClick, true);
@@ -89,17 +92,21 @@ namespace TransportFever3Trainer
         {
             e.Graphics.Clear(Parent == null ? Theme.Back : Parent.BackColor); if (Width < 2 || Height < 2) return;
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            Color fill = !Enabled ? Theme.Input : Primary ? Theme.Purple : hovered ? Theme.AccentSoft : BackColor;
+            bool solid = Primary && !Navigation && !Subtle;
+            Color fill = !Enabled ? Theme.Input : solid ? Theme.Purple : Primary || hovered ? Theme.AccentSoft : Subtle ? Theme.Back : BackColor;
             if (Enabled && pressed) fill = Primary ? ControlPaint.Dark(fill, .08f) : Theme.Line;
-            using (var path = Theme.Path(new Rectangle(0, 0, Width - 1, Height - 1), Ui.Px(this, 12)))
+            using (var path = Theme.Path(new Rectangle(0, 0, Width - 1, Height - 1), Ui.Px(this, 10)))
             using (var brush = new SolidBrush(fill))
-            using (var border = new Pen(Primary && Enabled ? Theme.Purple : Theme.Line))
-            { e.Graphics.FillPath(brush, path); e.Graphics.DrawPath(border, path); }
-            TextRenderer.DrawText(e.Graphics, Text, Font, Rectangle.Inflate(ClientRectangle, -Ui.Px(this, 7), 0),
-                !Enabled ? Theme.Muted : Primary ? Color.White : ForeColor,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
+            using (var border = new Pen(solid && Enabled ? Theme.Purple : Theme.Line))
+            { e.Graphics.FillPath(brush, path); if (!Navigation && !Subtle) e.Graphics.DrawPath(border, path); }
+            if (Navigation && Primary)
+                using (var brush = new SolidBrush(Theme.Purple)) e.Graphics.FillRectangle(brush, Ui.Px(this, 1), Ui.Px(this, 10), Ui.Px(this, 3), Math.Max(1, Height - Ui.Px(this, 20)));
+            TextRenderer.DrawText(e.Graphics, Text, Font, Rectangle.Inflate(ClientRectangle, -Ui.Px(this, Navigation ? 18 : 7), 0),
+                !Enabled ? Theme.Muted : solid ? Color.White : Primary ? Theme.Purple : ForeColor,
+                (Navigation ? TextFormatFlags.Left : TextFormatFlags.HorizontalCenter) | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
             if (Enabled && ((Focused && ShowFocusCues) || isDefault) && Width > 10 && Height > 10)
-                ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle, -4, -4));
+                using (var path = Theme.Path(Rectangle.Inflate(ClientRectangle, -3, -3), Ui.Px(this, 8)))
+                using (var pen = new Pen(solid ? Color.White : Theme.Purple)) e.Graphics.DrawPath(pen, path);
         }
     }
     class Switch : Control

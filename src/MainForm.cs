@@ -21,9 +21,9 @@ namespace TransportFever3Trainer
         public int DisplayNameRevision { get; private set; }
         public string NameScope { get { return !Data.Bool(State, "playing") ? "" : (bridge == null ? "preview" : bridge.ProcessStartTicks.ToString(CultureInfo.InvariantCulture)) + ":" + Data.Str(State, "nameScope"); } }
         readonly bool offline;
-        Bridge bridge; bool connecting, sending, closing, arranging;
+        Bridge bridge; bool connecting, sending, closing, arranging, arrangingFeatures;
         readonly Queue<RequestItem> requests = new Queue<RequestItem>(); RequestItem activeRequest;
-        readonly Surface sidebar = new Surface { Name = "sidebar" }, header = new Surface { Name = "page-header" };
+        readonly Surface sidebar = new Surface { Name = "sidebar", Radius = 12 }, header = new Surface { Name = "page-header", BorderVisible = false, BackColor = Theme.Back };
         readonly Panel pages = new Panel();
         readonly FlowLayoutPanel navigationBar = new FlowLayoutPanel(), actions = new FlowLayoutPanel();
         readonly Label heading, stats, status, online, appTitle, appCaption, pageHint;
@@ -56,10 +56,10 @@ namespace TransportFever3Trainer
             // dynamically created controls a second time through Form autoscaling.
             AutoScaleMode = AutoScaleMode.None; FormBorderStyle = FormBorderStyle.Sizable; MaximizeBox = true;
             offline = offlineCheck; Text = "狂热运输3修改器 · v" + Protocol.Version; ClientSize = new Size(1220, 780);
-            heading = LabelFor("常用功能", 18, true); heading.Name = "page-heading";
+            heading = LabelFor("常用功能", 16, true); heading.Name = "page-heading";
             pageHint = LabelFor("", 9); pageHint.ForeColor = Theme.Muted; pageHint.Name = "page-help";
-            stats = LabelFor("连接游戏后显示公司与时间信息", 10); stats.ForeColor = Theme.Muted;
-            online = LabelFor("● 游戏未连接", 10); online.ForeColor = Theme.Muted;
+            stats = LabelFor("连接游戏后显示公司与时间信息", 9); stats.ForeColor = Theme.Muted; stats.TextAlign = ContentAlignment.TopRight;
+            online = LabelFor("● 游戏未连接", 9); online.ForeColor = Theme.Muted; online.TextAlign = ContentAlignment.MiddleRight;
             status = LabelFor("请进入地图，再连接游戏。", 9); status.ForeColor = Theme.Muted; status.Name = "status-message";
             appTitle = LabelFor("狂热运输 3", 10, true); appCaption = LabelFor("修改器", 9); appCaption.ForeColor = Theme.Muted;
             sidebar.Controls.Add(mark); sidebar.Controls.Add(appTitle); sidebar.Controls.Add(appCaption);
@@ -73,10 +73,10 @@ namespace TransportFever3Trainer
             string[] names = { "常用功能", "货物添加", "世界管理", "镜头书签", "诊断" }, ids = { "features", "cargo", "world", "camera", "diagnostics" };
             for (int i = 0; i < names.Length; i++)
             {
-                string id = ids[i]; var button = new PillButton { Text = names[i], Name = "navigation-" + id };
+                string id = ids[i]; var button = new PillButton { Text = names[i], Name = "navigation-" + id, Navigation = true, Font = Theme.F(10) };
                 button.Click += delegate { ShowPage(id); }; navigation[id] = button; navigationBar.Controls.Add(button);
             }
-            connect = new PillButton { Text = "连接 / 刷新", Primary = true, Name = "connect-game" };
+            connect = new PillButton { Text = "连接游戏", Primary = true, Name = "connect-game" };
             connect.Click += delegate { ConnectGame(); }; actions.Controls.Add(connect);
             reset = new PillButton { Text = "关闭全部功能", Name = "reset-features" };
             reset.Click += delegate { Request(new { op = "reset" }); }; actions.Controls.Add(reset);
@@ -96,7 +96,9 @@ namespace TransportFever3Trainer
             SizeChanged += delegate { Arrange(); };
             DpiChanged += delegate { Arrange(); };
             timer.Tick += delegate { Poll(); };
-            Shown += delegate { Arrange(); if (!offline) { RegisterKeys(); timer.Start(); ConnectGame(); } };
+            // Opening the interface does not open or inject into a game. Only
+            // an explicit connection (or the requested live capture mode) does.
+            Shown += delegate { Arrange(); if (!offline) { RegisterKeys(); timer.Start(); if (forCapture) ConnectGame(); } };
             FormClosing += delegate {
                 closing = true; timer.Stop(); foreach (int id in hotkeys.Keys) Native.UnregisterHotKey(Handle, id);
                 if (bridge != null) bridge.Dispose(); tooltips.Dispose(); timer.Dispose();
@@ -115,18 +117,19 @@ namespace TransportFever3Trainer
             {
                 if (logicalFonts != null) logicalFonts.Restore();
                 var area = LayoutArea;
-                int pad = P(16), gap = P(16), sideWidth = P(area.Width >= P(1000) ? 208 : 144);
+                int pad = P(16), gap = P(18), sideWidth = P(area.Width >= P(900) ? 184 : 132);
                 sidebar.SetBounds(area.Left + pad, area.Top + pad, sideWidth, Math.Max(1, area.Height - pad * 2));
                 bool shortSidebar = sidebar.Height < P(420);
-                mark.SetBounds(P(12), P(18), P(32), P(32));
-                appTitle.SetBounds(P(56), P(14), Math.Max(1, sideWidth - P(68)), P(26));
-                appCaption.SetBounds(P(56), P(42), Math.Max(1, sideWidth - P(68)), P(22));
+                mark.SetBounds(P(12), P(18), P(28), P(28));
+                appTitle.Text = sideWidth >= P(180) ? "狂热运输 3" : "TF3 修改器";
+                appTitle.SetBounds(P(50), P(15), Math.Max(1, sideWidth - P(58)), P(23));
+                appCaption.SetBounds(P(50), P(39), Math.Max(1, sideWidth - P(58)), P(20));
                 int innerWidth = sideWidth - P(24), actionHeight = P(shortSidebar ? 34 : 36);
                 int actionGap = P(8), actionTotal = actionHeight * actions.Controls.Count + actionGap * (actions.Controls.Count - 1);
                 actions.SetBounds(P(12), Math.Max(P(72), sidebar.Height - P(16) - actionTotal), innerWidth, actionTotal);
                 foreach (PillButton button in actions.Controls)
                 { button.Size = new Size(innerWidth, actionHeight); button.Margin = new Padding(0, 0, 0, button == reset ? 0 : actionGap); }
-                int navTop = P(shortSidebar ? 72 : 92), navHeight = P(shortSidebar ? 32 : 40), navGap = P(shortSidebar ? 6 : 8);
+                int navTop = P(shortSidebar ? 70 : 82), navHeight = P(shortSidebar ? 32 : 38), navGap = P(4);
                 int navTotal = navigation.Count * navHeight + Math.Max(0, navigation.Count - 1) * navGap;
                 var navOffset = navigationBar.AutoScrollPosition; navigationBar.SuspendLayout();
                 try
@@ -144,18 +147,17 @@ namespace TransportFever3Trainer
                     navigationBar.AutoScrollPosition = new Point(-navOffset.X, -navOffset.Y);
                 }
 
-                int contentLeft = sidebar.Right + gap, w = Math.Max(1, area.Right - contentLeft - pad); bool wide = w >= P(840);
-                bool compactHeader = area.Height < P(560);
-                header.SetBounds(contentLeft, area.Top + pad, w, P(compactHeader ? 80 : wide ? 96 : 132));
-                online.Visible = stats.Visible = !compactHeader;
-                appCaption.Text = compactHeader ? CaptureReady ? "已连接" : "未连接" : "修改器";
-                appCaption.ForeColor = compactHeader && CaptureReady ? Theme.Green : Theme.Muted;
-                heading.SetBounds(P(20), P(12), Math.Max(1, wide ? w / 2 - P(30) : w - P(40)), P(32));
-                pageHint.SetBounds(P(20), P(46), Math.Max(1, wide ? w / 2 - P(30) : w - P(40)), P(24));
-                online.SetBounds(P(20), P(72), Math.Max(1, wide ? w / 2 - P(30) : w - P(40)), P(20));
-                if (wide) stats.SetBounds(w / 2 + P(16), P(16), w / 2 - P(36), P(64));
-                else stats.SetBounds(P(20), P(94), Math.Max(1, w - P(40)), P(34));
-                int pageTop = header.Bottom + P(12), footer = P(28);
+                int contentLeft = sidebar.Right + gap, w = Math.Max(1, area.Right - contentLeft - pad); bool wide = w >= P(700);
+                bool compactHeader = area.Height < P(500);
+                header.SetBounds(contentLeft, area.Top + pad, w, P(compactHeader ? 64 : 76));
+                online.Visible = true; stats.Visible = wide && !compactHeader;
+                appCaption.Text = (sideWidth >= P(180) ? "修改器 · v" : "v") + Protocol.Version;
+                appCaption.ForeColor = Theme.Muted;
+                heading.SetBounds(0, P(2), Math.Max(1, w - P(144)), P(30));
+                online.SetBounds(Math.Max(0, w - P(136)), P(5), P(136), P(24));
+                pageHint.SetBounds(0, P(37), Math.Max(1, stats.Visible ? w - P(320) : w), P(compactHeader ? 24 : 32));
+                stats.SetBounds(Math.Max(0, w - P(310)), P(34), P(310), P(40));
+                int pageTop = header.Bottom + P(8), footer = P(24);
                 pages.SetBounds(contentLeft, pageTop, w, Math.Max(1, area.Bottom - pageTop - pad - footer));
                 status.SetBounds(contentLeft + P(2), area.Bottom - pad - footer + P(4), Math.Max(1, w - P(4)), footer);
                 ArrangeFeatures(); foreach (var catalog in catalogs) catalog.Arrange(); camera.Arrange();
@@ -173,7 +175,7 @@ namespace TransportFever3Trainer
             var specs = Data.Rows(Data.Json.DeserializeObject(Data.Resource("Features.json")));
             foreach (string category in new[] { "全部" }.Concat(specs.Select(x => Data.Str(x, "group")).Distinct()))
             {
-                string value = category; var button = new PillButton { Text = category, Name = "feature-group" };
+                string value = category; var button = new PillButton { Text = category, Name = "feature-group", Subtle = true };
                 button.Click += delegate { SetGroup(value); }; groups.Controls.Add(button);
             }
             foreach (var spec in specs)
@@ -193,25 +195,32 @@ namespace TransportFever3Trainer
         }
         void ArrangeFeatures()
         {
-            if (featurePage == null || featurePage.Width < 1) return;
-            foreach (PillButton button in groups.Controls)
-            { button.Size = new Size(P(button.Text == "全部" ? 68 : 130), P(32)); button.Margin = new Padding(0, 0, P(7), P(7)); button.Primary = button.Text == group; }
-            groups.SetBounds(0, P(4), featurePage.Width, Ui.FlowHeight(groups, featurePage.Width, P(39)));
-            featureScroll.SetBounds(0, groups.Bottom + P(8), featurePage.Width, Math.Max(1, featurePage.Height - groups.Bottom - P(8)));
+            if (featurePage == null || featurePage.Width < 1 || arrangingFeatures) return;
+            arrangingFeatures = true;
             var offset = featureScroll.AutoScrollPosition;
-            int width = Math.Max(1, featureScroll.ClientSize.Width - P(19)), gap = P(16), y = 0;
-            int columns = Ui.FeatureColumns(this, width), cardWidth = Math.Max(1, (width - (columns - 1) * gap) / columns);
-            foreach (var pair in sections)
+            featureScroll.SuspendLayout(); featureScroll.AutoScrollPosition = Point.Empty; featureScroll.AutoScroll = false;
+            try
             {
-                bool visible = group == "全部" || group == pair.Key; pair.Value.Visible = visible; if (!visible) continue;
-                var items = pair.Value.Controls.OfType<FeatureCard>().ToList();
-                int rows = (items.Count + columns - 1) / columns;
-                pair.Value.SetBounds(0, y, width, P(40) + rows * P(142));
-                pair.Value.Controls.OfType<Label>().First().SetBounds(P(4), P(5), Math.Max(1, width - P(8)), P(28));
-                for (int i = 0; i < items.Count; i++) items[i].SetBounds((i % columns) * (cardWidth + gap), P(40) + (i / columns) * P(142), cardWidth, P(126));
-                y += pair.Value.Height + P(8);
+                foreach (PillButton button in groups.Controls)
+                { button.Size = new Size(Ui.ButtonWidth(button, button.Text == "全部" ? 52 : 92), Ui.ButtonHeight(button, 30)); button.Margin = new Padding(0, 0, P(5), P(5)); button.Primary = button.Text == group; }
+                int groupRow = groups.Controls.Cast<Control>().Select(c => c.Height + c.Margin.Vertical).DefaultIfEmpty(P(35)).Max();
+                groups.SetBounds(0, 0, featurePage.Width, Ui.FlowHeight(groups, featurePage.Width, groupRow));
+                featureScroll.SetBounds(0, groups.Bottom + P(10), featurePage.Width, Math.Max(1, featurePage.Height - groups.Bottom - P(10)));
+                int width = Math.Max(1, featureScroll.ClientSize.Width - P(19)), gap = P(12), y = 0;
+                int columns = Ui.FeatureColumns(this, width), cardWidth = Math.Max(1, (width - (columns - 1) * gap) / columns);
+                foreach (var pair in sections)
+                {
+                    bool visible = group == "全部" || group == pair.Key; pair.Value.Visible = visible; if (!visible) continue;
+                    var items = pair.Value.Controls.OfType<FeatureCard>().ToList();
+                    int rows = (items.Count + columns - 1) / columns;
+                    pair.Value.SetBounds(0, y, width, P(32) + rows * P(126));
+                    pair.Value.Controls.OfType<Label>().First().SetBounds(P(2), P(2), Math.Max(1, width - P(4)), P(24));
+                    for (int i = 0; i < items.Count; i++) { items[i].SetBounds((i % columns) * (cardWidth + gap), P(32) + (i / columns) * P(126), cardWidth, P(114)); items[i].Arrange(); }
+                    y += pair.Value.Height + P(12);
+                }
+                featuresContent.SetBounds(0, 0, width, y); featureScroll.AutoScrollMinSize = new Size(0, y);
             }
-            featuresContent.SetBounds(0, 0, width, y); featureScroll.AutoScrollMinSize = new Size(0, y);
+            finally { featureScroll.AutoScroll = true; featureScroll.ResumeLayout(true); arrangingFeatures = false; }
             featureScroll.AutoScrollPosition = new Point(-offset.X, -offset.Y);
         }
         public void ShowPage(string id)
@@ -319,7 +328,6 @@ namespace TransportFever3Trainer
                     if (!success) CancelQueued(message); SendNext();
                 }
                 online.Text = CaptureReady ? Busy ? "● 游戏已连接 · 操作执行中" : "● 游戏已连接" : "● 游戏未连接";
-                if (LayoutArea.Height < P(560)) { appCaption.Text = CaptureReady ? "已连接" : "未连接"; appCaption.ForeColor = CaptureReady ? Theme.Green : Theme.Muted; }
                 foreach (var catalog in catalogs) catalog.UpdateActions(); camera.UpdateState(); Enable(reset, CaptureReady && !Busy);
             }
             catch (Exception e)
@@ -332,6 +340,7 @@ namespace TransportFever3Trainer
         void UpdateState()
         {
             bool playing = CaptureReady; online.Text = playing ? "● 游戏已连接" : "● 游戏未连接"; online.ForeColor = playing ? Theme.Green : Theme.Muted;
+            connect.Text = playing ? "刷新游戏" : "连接游戏";
             stats.Text = playing ? "结余 " + Data.Num(State, "balance").ToString("N0") + " · 贷款 " + Data.Num(State, "loan").ToString("N0") + " · 等级 " + Data.Num(State, "rank") +
                 "\r\n" + Data.Str(State, "date") + " · 模拟 " + Data.Num(State, "speed") + "x · 经验 " + Data.Num(State, "experience").ToString("N0") : "请打开游戏，进入地图后连接。";
             var settings = Data.Obj(Data.Get(State, "settings")); var caps = Data.Obj(Data.Get(State, "capabilities"));
@@ -392,7 +401,7 @@ namespace TransportFever3Trainer
             if (offline) return; foreach (int id in hotkeys.Keys) Native.UnregisterHotKey(Handle, id); hotkeys.Clear(); int next = 100;
             foreach (var card in cards)
             {
-                int key; if (!Prefs.keys.TryGetValue(card.Key, out key)) { card.Value.Hotkey.Text = "设置快捷键"; continue; }
+                int key; if (!Prefs.keys.TryGetValue(card.Key, out key)) { card.Value.Hotkey.Text = "快捷键"; continue; }
                 Keys value = (Keys)key; uint modifiers = 0x4000;
                 if ((value & Keys.Control) != 0) modifiers |= 2; if ((value & Keys.Shift) != 0) modifiers |= 4; if ((value & Keys.Alt) != 0) modifiers |= 1;
                 if (Native.RegisterHotKey(Handle, next, modifiers, (uint)(value & Keys.KeyCode))) { hotkeys[next++] = card.Key; card.Value.Hotkey.Text = new KeysConverter().ConvertToString(value); }
@@ -504,6 +513,7 @@ namespace TransportFever3Trainer
                             issues.Add("page navigation must stay in a separate left sidebar");
                         if (id == "features")
                         {
+                            ValidateFeatureLayout();
                             var sideBounds = sidebar.Bounds; var navPosition = navigationBar.PointToScreen(Point.Empty);
                             featureScroll.AutoScrollPosition = new Point(0, P(100)); Application.DoEvents();
                             if (sidebar.Bounds != sideBounds || navigationBar.PointToScreen(Point.Empty) != navPosition)
@@ -524,6 +534,25 @@ namespace TransportFever3Trainer
             }
             catch (Exception e) { report.Add(new { error = e.ToString(), pass = false }); File.WriteAllText(output, Data.Json.Serialize(report), System.Text.Encoding.UTF8); return false; }
             finally { Ui.LayoutTestScale = 0; }
+        }
+        void ValidateFeatureLayout()
+        {
+            var previous = featureScroll.AutoScrollPosition;
+            featureScroll.AutoScrollPosition = Point.Empty; ArrangeFeatures(); Application.DoEvents();
+            var first = sections.Values.First(s => s.Visible);
+            int top = first.PointToScreen(Point.Empty).Y - featureScroll.PointToScreen(Point.Empty).Y;
+            if (Math.Abs(top) > P(2) || featuresContent.Top > P(2)) throw new Exception("常用功能页顶部出现空白偏移");
+            var visibleCards = first.Controls.OfType<FeatureCard>().ToList();
+            if (Ui.FeatureColumns(this, featuresContent.Width) > 1 && visibleCards.Count > 1 && visibleCards[0].Top != visibleCards[1].Top)
+                throw new Exception("普通宽度没有使用多列功能布局");
+            foreach (var card in cards.Values)
+                if (Math.Abs(Ui.Scale(card) - Ui.Scale(this)) > .001 || Math.Abs(Ui.Scale(card.Hotkey) - Ui.Scale(this)) > .001)
+                    throw new Exception("内部卡片没有使用窗口的 DPI 比例");
+            featureScroll.AutoScrollPosition = new Point(0, P(120)); var scrolled = featureScroll.AutoScrollPosition;
+            ArrangeFeatures(); Application.DoEvents();
+            if (featureScroll.AutoScrollPosition != scrolled || featuresContent.Top != featureScroll.AutoScrollPosition.Y)
+                throw new Exception("功能页重排丢失滚动位置或产生多余空白");
+            featureScroll.AutoScrollPosition = new Point(-previous.X, -previous.Y);
         }
         static void Audit(Control parent, List<string> issues)
         {

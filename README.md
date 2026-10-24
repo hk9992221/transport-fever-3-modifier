@@ -1,8 +1,8 @@
 # Transport Fever 3 Modifier
 
-《狂热运输3》Windows x64 修改器，当前版本 **v1.1.6**，通信协议 **v6**。桌面界面使用 C# / Windows Forms，游戏内运行模块使用 C 和 MinHook，功能由 Lua 脚本实现。
+《狂热运输3》Windows x64 修改器，当前版本 **v1.1.7**，通信协议 **v6**。桌面界面使用 C# / Windows Forms，游戏内运行模块使用 C 和 MinHook，功能由 Lua 脚本实现。
 
-v1.1.6 使用浅色界面和交通主题图标。主页面导航固定在左侧，连接与关闭功能按钮位于侧栏底部；右侧内容独立滚动。普通窗口可拖动边缘或角落自由缩放，内容比例保持 16:10；支持最大化和还原。最大化时内容等比居中，周围按屏幕比例留白。初始尺寸以 1280×800 为基准适配屏幕工作区域和 DPI。按钮按实际字体测量，说明文字换行并参与滚动，空间较小时自动切换布局。
+v1.1.7 使用浅色界面和交通主题图标，主页面缩小页头与侧栏，功能按窗口宽度排列为 1–3 列卡片，常见宽度为双列。内部控件统一使用主窗口 DPI；功能页重排会先复位滚动坐标再恢复进度，避免顶部空白与按钮截字。主页面导航固定在左侧，连接与关闭功能按钮位于侧栏底部；右侧内容独立滚动。普通窗口可拖动边缘或角落自由缩放，内容比例保持 16:10；支持最大化和还原。最大化时内容等比居中，周围按屏幕比例留白。初始尺寸以 1280×800 为基准适配屏幕工作区域和 DPI。按钮按实际字体测量，说明文字换行并参与滚动，空间较小时自动切换布局。
 
 货物页左侧搜索与选择货物，右侧选择接收建筑。推荐和定位使用一排紧凑按钮；每种数量与“添加货物”固定在底部。常规尺寸下右侧表单无需滚动；小窗口改为单列滚动，数量与执行区仍固定显示。页面字体保留统一的逻辑字号，避免 DPI 切换后局部重复放大。搜索与切换筛选会保留勾选；地图切换时清除旧选择。刷新也会保留未提交的名称输入。
 
@@ -14,9 +14,17 @@ v1.1.6 使用浅色界面和交通主题图标。主页面导航固定在左侧�
 
 游戏名称优先通过 `getEntityName` 读取，其次读取名称组件，缺省名称不再附加实体编号。游戏支持改名时可“保存到游戏”，并等待名称回读确认；无法读取游戏名时可设置“显示名称”，仅用于当前地图会话。显示名称不会覆盖可读的游戏名称，也不会跨游戏重启或其他地图套用。
 
+## 从 Releases 下载 Setup 安装版
+
+默认手动构建发布 `TransportFever3Modifier-v1.1.7-windows-x64-setup.exe` 与 `.sha256`。安装到当前用户的 `%LOCALAPPDATA%/Programs/TransportFever3Modifier/`，无需管理员权限。各版本位于 `versions/v版本号/`，开始菜单快捷方式指向本次版本；可通过 Windows 已安装应用正常卸载。安装完成时不会默认打开程序。
+
+Setup 安装后直接运行图形主程序，不再每次通过 Portable 释放并启动另一份 EXE。个人设置保存在 `%LOCALAPPDATA%/TransportFever3Modifier/UserData/配置/用户设置.json`，升级时继续使用，卸载不会删除这些设置。
+
+普通打开界面不会自动连接游戏。进入游戏地图后点击“连接游戏”，才加载运行模块。连接仍使用 DLL 加载与接口挂钩，可能触发安全软件；当前没有配置可信发布者签名，不能保证不报警。报警定位与官方复核入口见 [安全软件报警说明](docs/安全软件报警说明.md)。
+
 ## 从 Releases 下载单文件便携 EXE
 
-打开仓库的 [Releases](https://github.com/hk9992221/transport-fever-3-modifier/releases)，下载 `TransportFever3Modifier-v1.1.6-windows-x64-portable.exe` 后直接运行，无需解压或安装。可同时下载 `.sha256` 校验文件。
+在 Actions 中选择 `portable` 可以继续发布便携版。打开仓库的 [Releases](https://github.com/hk9992221/transport-fever-3-modifier/releases)，下载 `TransportFever3Modifier-v1.1.7-windows-x64-portable.exe` 后直接运行，无需解压或安装。可同时下载 `.sha256` 校验文件。
 
 主程序、DPI 配置、运行模块、Lua、使用说明与第三方许可均内嵌在这个 EXE 中，不需要另行下载 DLL。运行文件会释放到 `%LOCALAPPDATA%/TransportFever3Modifier/portable/` 下按资源内容区分的缓存目录；启动前核对 SHA-256。更新时不会覆盖游戏仍在使用的旧模块。
 
@@ -28,17 +36,17 @@ v1.1.6 使用浅色界面和交通主题图标。主页面导航固定在左侧�
 
 1. 打开仓库的 **Actions** 页面。
 2. 选择 **Windows x64 手动发布**。
-3. 点击 **Run workflow**，保持 `main` 分支并再次点击 **Run workflow**。
-4. 构建成功后，工作流会按源码版本号自动创建标签及 Release，例如 `v1.1.6`，并上传单文件便携 EXE 和 `.sha256` 校验文件。
+3. 点击 **Run workflow**，保持 `main` 分支；格式默认为 `setup`，也可选择 `portable`。再次点击 **Run workflow**。
+4. 构建成功后，工作流会按源码版本号自动创建标签及 Release，例如 `v1.1.7`，并上传所选格式的 EXE 和 `.sha256` 校验文件。
 5. 在构建摘要中打开 Release 链接，或直接进入仓库的 **Releases** 下载。
 
 发布文件保存在 Releases 中，不使用临时 Actions Artifacts 保存安装包。工作流使用仓库自动提供的 `GITHUB_TOKEN`，无需额外配置个人访问令牌。发布前先创建草稿并上传附件，完成后正式发布；同一提交重复运行可补传或更新附件。版本标签已绑定其他提交时会停止发布，需先升级版本；不会移动已有版本标签。
 
-工作流使用 `windows-2022`、系统 .NET Framework C# 编译器和固定版本 Zig 0.14.1；下载 Zig 时核对 SHA-256。发布前会将便携 EXE 单独复制到含中文与空格的目录，运行离线布局检查，再核对自动释放的全部文件及 SHA-256。检查使用独立临时缓存与设置目录，不连接游戏。工作流名称和构建日志显示源码提交；测试新修复时请从 `main` 创建新的运行，重跑旧记录仍使用旧提交。
+工作流使用 `windows-2022`、系统 .NET Framework C# 编译器和固定版本 Zig 0.14.1；下载 Zig 时核对 SHA-256。Setup 使用 runner 自带的 Inno Setup 6，执行隔离安装、核对全部文件与 SHA-256、运行已安装程序的离线界面检查，再正常卸载。Portable 将下载 EXE 单独复制到含中文与空格的目录，运行离线布局检查，再核对释放文件。检查使用独立临时缓存与设置目录，不连接游戏。工作流名称和构建日志显示源码提交；测试新修复时请从 `main` 创建新的运行，重跑旧记录仍使用旧提交。
 
 ## 使用
 
-需要 Windows 10/11 x64 和 .NET Framework 4.8。先打开游戏并进入地图，再运行下载的 `portable.exe`。游戏和修改器使用相同权限；更新运行模块后应完全重启游戏。
+需要 Windows 10/11 x64 和 .NET Framework 4.8。先安装 Setup 或运行 Portable，进入游戏地图后点击“连接游戏”。游戏和修改器使用相同权限；更新运行模块后应完全重启游戏。
 
 功能包括公司财务、产业生产、载具参数、日历与模拟速度等 19 项常用功能，以及货物添加、城镇与产业管理、镜头定位和镜头书签。详细说明见 [使用说明](docs/使用说明.txt)。
 
@@ -58,13 +66,19 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 .\scripts\build-windows.ps1 -Compiler 'C:\Tools\zig\zig.exe' -OutputDirectory '.\dist-local'
 ```
 
-默认生成单文件便携 EXE 与校验文件。仅需展开的开发文件夹时：
+本地默认生成 Portable EXE 与校验文件，与旧命令兼容。需要 Setup 时先安装 Inno Setup 6.3 或以上版本，再运行：
+
+```powershell
+.\scripts\build-windows.ps1 -Compiler 'C:\Tools\zig\zig.exe' -Package Setup
+```
+
+本地 Setup 构建检查图形程序，不会自动安装到本机。安装与卸载自测只在隔离的 Actions runner 中执行。仅需展开的开发文件夹时：
 
 ```powershell
 .\scripts\build-windows.ps1 -Compiler 'C:\Tools\zig\zig.exe' -OutputDirectory '.\dist-folder' -Folder
 ```
 
-输出位于 `dist-folder/TransportFever3Modifier-v1.1.6-windows-x64/`，可直接运行其中的主程序。原有 `-SkipZip` 参数保留为 `-Folder` 的别名。GitHub Actions 默认发布单文件便携 EXE。
+输出位于 `dist-folder/TransportFever3Modifier-v1.1.7-windows-x64/`，可直接运行其中的主程序。原有 `-SkipZip` 参数保留为 `-Folder` 的别名。GitHub Actions 默认发布 Setup，可手动选择 Portable。
 
 构建会输出当前阶段。离线检查通过环境标记和入口参数阻止游戏连接与模块注入。临时目录清理会短暂重试；仍有文件被占用时只单独告警，保留原始构建错误。能够读取进程模块时，会指出加载了临时 DLL 的游戏 PID。已被游戏加载的旧 DLL 需在正常退出游戏后才能删除。
 
@@ -74,7 +88,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 
 - `src/`：C#、C、Lua、资源、MinHook 源码和底层构建脚本。
 - `scripts/build-windows.ps1`：统一构建、校验及便携打包入口。
-- `packaging/`：单文件便携启动程序与内嵌资源构建脚本。
+- `packaging/`：标准 Setup 安装脚本，以及可选 Portable 启动程序与构建脚本。
 - `.github/workflows/windows-package.yml`：仅由 `workflow_dispatch` 触发的 Windows 构建及 Release 发布工作流。
 - `docs/`：使用说明及第三方说明。
 

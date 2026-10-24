@@ -63,7 +63,7 @@ sealed class FeatureCard:Surface {
 
  public event Action<FeatureCard> Requested;public event Action<FeatureCard> KeyRequested;
 
- public FeatureCard(Dictionary<string,object> spec){Spec=spec;Height=126;BackColor=Theme.Card;Radius=12;title=MainForm.LabelFor(Data.Str(spec,"name"),11,true);note=MainForm.LabelFor(Data.Str(spec,"note"),9);note.ForeColor=Theme.Muted;Controls.Add(title);Controls.Add(note);Hotkey.Text="设置快捷键";Hotkey.Font=Theme.F(9);Hotkey.BackColor=Theme.Panel;Controls.Add(Hotkey);Hotkey.Click+=delegate{if(KeyRequested!=null)KeyRequested(this);};
+ public FeatureCard(Dictionary<string,object> spec){Spec=spec;Height=114;BackColor=Theme.Card;Radius=10;title=MainForm.LabelFor(Data.Str(spec,"name"),10,true);note=MainForm.LabelFor(Data.Str(spec,"note"),8.5f);note.ForeColor=Theme.Muted;Controls.Add(title);Controls.Add(note);Hotkey.Text="快捷键";Hotkey.Font=Theme.F(8.5f);Hotkey.BackColor=Theme.Panel;Controls.Add(Hotkey);Hotkey.Click+=delegate{if(KeyRequested!=null)KeyRequested(this);};
 
   if(Kind=="action"||Kind=="number_action"){if(Kind=="number_action"){Number.Minimum=(decimal)Data.Num(spec,"min",1);Number.Maximum=(decimal)Data.Num(spec,"max",500);Number.Value=(decimal)Data.Num(spec,"default",50);Number.DecimalPlaces=(int)Data.Num(spec,"digits",0);Number.Increment=Number.DecimalPlaces==0?1:.05m;Number.BorderStyle=BorderStyle.None;Number.BackColor=Theme.Input;Number.ForeColor=Theme.Ink;Number.TextAlign=HorizontalAlignment.Center;Number.Font=Theme.F(10,true);Controls.Add(Number);}Run.Text="执行";Run.Primary=true;Controls.Add(Run);Run.Click+=delegate{if(Requested!=null)Requested(this);};}else{Controls.Add(Toggle);Toggle.CheckedChanged+=delegate{if(!updating){valueTimer.Stop();if(Requested!=null)Requested(this);}};if(Kind=="value"){Number.Minimum=(decimal)Data.Num(spec,"min");Number.Maximum=(decimal)Data.Num(spec,"max",10);Number.DecimalPlaces=(int)Data.Num(spec,"digits",2);Number.Increment=Number.DecimalPlaces==0?1:.05m;Number.Value=(decimal)Data.Num(spec,"default",1);Number.BackColor=Theme.Input;Number.ForeColor=Theme.Ink;Number.BorderStyle=BorderStyle.None;Number.TextAlign=HorizontalAlignment.Center;Number.Font=Theme.F(9,true);Slider.Minimum=(double)Number.Minimum;Slider.Maximum=(double)Number.Maximum;Slider.Value=(double)Number.Value;Controls.Add(Number);Controls.Add(Slider);Number.ValueChanged+=delegate{bool user=!updating;bool old=updating;updating=true;Slider.Value=(double)Number.Value;updating=old;if(user&&Toggle.Checked){valueTimer.Stop();valueTimer.Start();}};valueTimer.Tick+=delegate{valueTimer.Stop();if(Toggle.Checked&&Toggle.Enabled&&Requested!=null)Requested(this);};Disposed+=delegate{valueTimer.Dispose();};Slider.ValueChanged+=delegate{if(!updating){updating=true;Number.Value=Math.Round((decimal)Slider.Value,Number.DecimalPlaces);updating=false;}};Slider.MouseUp+=delegate{if(Toggle.Checked&&Requested!=null)Requested(this);};Slider.KeyUp+=delegate{if(Toggle.Checked&&Requested!=null)Requested(this);};}}
 
@@ -71,7 +71,33 @@ sealed class FeatureCard:Surface {
 
  }
 
- void Arrange(){int w=Width,p=Ui.Px(this,16),row=Ui.Px(this,48);Hotkey.Name="feature-hotkey";Hotkey.SetBounds(w-Ui.Px(this,118),Ui.Px(this,12),Ui.Px(this,102),Ui.Px(this,27));title.SetBounds(p,Ui.Px(this,12),Math.Max(1,w-Ui.Px(this,150)),Ui.Px(this,29));note.SetBounds(p,Ui.Px(this,88),Math.Max(1,w-p*2),Ui.Px(this,32));if(Kind=="action"||Kind=="number_action"){Run.Name="feature-run";Run.SetBounds(Kind=="action"?p:w-Ui.Px(this,116),row,Ui.Px(this,100),Ui.Px(this,34));if(Kind=="number_action"){Number.Name="feature-number";Number.SetBounds(p,row,Math.Max(1,Math.Min(Ui.Px(this,240),w-Ui.Px(this,148))),Ui.Px(this,30));}else note.SetBounds(Ui.Px(this,132),row,Math.Max(1,w-Ui.Px(this,148)),Ui.Px(this,62));}else{Toggle.Name="feature-toggle";Toggle.SetBounds(p,row,Ui.Px(this,40),Ui.Px(this,24));if(Kind=="value"){Number.Name="feature-number";Number.SetBounds(w-Ui.Px(this,128),row,Ui.Px(this,112),Ui.Px(this,30));Slider.Name="feature-slider";Slider.SetBounds(Ui.Px(this,72),row,Math.Max(1,w-Ui.Px(this,216)),Ui.Px(this,28));}else note.SetBounds(Ui.Px(this,72),row,Math.Max(1,w-Ui.Px(this,88)),Ui.Px(this,64));}}
+ public void Arrange()
+ {
+  int w=Width,p=Ui.Px(this,14),row=Ui.Px(this,77),gap=Ui.Px(this,10);
+  int keyWidth=Math.Min(Ui.ButtonWidth(Hotkey,72),Math.Max(Ui.Px(this,72),w/3));
+  Hotkey.Name="feature-hotkey";
+  Hotkey.SetBounds(w-p-keyWidth,Ui.Px(this,9),keyWidth,Ui.ButtonHeight(Hotkey,24));
+  title.SetBounds(p,Ui.Px(this,10),Math.Max(1,w-p*2-keyWidth-gap),Ui.Px(this,24));
+  note.SetBounds(p,Ui.Px(this,38),Math.Max(1,w-p*2),Ui.Px(this,31));
+  if(Kind=="action"||Kind=="number_action")
+  {
+   int runWidth=Ui.ButtonWidth(Run,80);
+   Run.Name="feature-run";Run.SetBounds(w-p-runWidth,row,runWidth,Ui.ButtonHeight(Run,28));
+   if(Kind=="number_action")
+   { Number.Name="feature-number";Number.SetBounds(p,row,Math.Max(1,Math.Min(Ui.Px(this,132),w-p*2-runWidth-gap)),Ui.Px(this,28)); }
+  }
+  else
+  {
+   Toggle.Name="feature-toggle";Toggle.SetBounds(p,row+Ui.Px(this,3),Ui.Px(this,34),Ui.Px(this,21));
+   if(Kind=="value")
+   {
+    int inputWidth=Ui.Px(this,92),sliderLeft=p+Ui.Px(this,46);
+    Number.Name="feature-number";Number.SetBounds(w-p-inputWidth,row,inputWidth,Ui.Px(this,28));
+    Slider.Name="feature-slider";Slider.SetBounds(sliderLeft,row,Math.Max(1,Number.Left-gap-sliderLeft),Ui.Px(this,28));
+   }
+  }
+ }
+
 
  public void Capability(object cap,bool connected){Supported=Data.Bool(cap,"supported");string reason=Data.Str(cap,"reason");note.Text=!connected||Supported?Data.Str(Spec,"note"):reason.Length>0?reason:"当前版本尚未验证";Toggle.Enabled=connected&&(Supported||Toggle.Checked);Run.Enabled=connected&&Supported;Hotkey.Enabled=true;Slider.Enabled=Number.Enabled=!connected||Supported;title.ForeColor=connected&&!Supported?Theme.Muted:Theme.Ink;}
 

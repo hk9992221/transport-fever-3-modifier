@@ -48,7 +48,11 @@ namespace TransportFever3Trainer
         internal static float LayoutTestScale;
         internal static float Scale(Control c)
         {
-            return LayoutTestScale > 0 ? LayoutTestScale : Math.Max(1f, c.DeviceDpi / 96f);
+            if (LayoutTestScale > 0) return LayoutTestScale;
+            // Nested controls may still report their creation DPI after they
+            // are reparented. Use the top-level window for the whole layout.
+            var window = c as Form ?? c.FindForm();
+            return Math.Max(1f, (window == null ? c.DeviceDpi : window.DeviceDpi) / 96f);
         }
         internal static int Px(Control c, int value) { return (int)Math.Round(value * Scale(c)); }
         internal static Size FitFixedClient(Size preferred, Size maximum)
@@ -106,7 +110,7 @@ namespace TransportFever3Trainer
         }
         internal static int FeatureColumns(Control parent, int width)
         {
-            return Math.Max(1, Math.Min(3, (width + Px(parent, 16)) / (Px(parent, 440) + Px(parent, 16))));
+            return Math.Max(1, Math.Min(3, (width + Px(parent, 12)) / (Px(parent, 320) + Px(parent, 12))));
         }
     }
 }

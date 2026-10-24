@@ -2,6 +2,8 @@
 param(
     [string]$Compiler = '',
     [string]$OutputDirectory = '',
+    [ValidateSet('Portable', 'Setup')][string]$Package = 'Portable',
+    [switch]$VerifySetup,
     [Alias('SkipZip')][switch]$Folder
 )
 
@@ -23,18 +25,21 @@ $runtimeName = "TransportFever3Runtime_v$protocol.dll"
 $luaName = "功能接口v$protocol.lua"
 $packageName = "TransportFever3Modifier-v$version-windows-x64"
 $portableName = $packageName + '-portable.exe'
-$portablePath = Join-Path $OutputDirectory $portableName
+$outputName = if ($Package -eq 'Setup') { $packageName + '-setup.exe' } else { $portableName }
+$outputPath = Join-Path $OutputDirectory $outputName
 $folderPath = Join-Path $OutputDirectory $packageName
 if ($Folder -and (Test-Path -LiteralPath $folderPath)) { throw '同名文件夹已存在；请指定新的 -OutputDirectory。' }
-if (-not $Folder -and ((Test-Path -LiteralPath $portablePath) -or (Test-Path -LiteralPath ($portablePath + '.sha256')))) {
-    throw '同名便携 EXE 或校验文件已存在；请移走旧产物或指定新的 -OutputDirectory。'
+if (-not $Folder -and ((Test-Path -LiteralPath $outputPath) -or (Test-Path -LiteralPath ($outputPath + '.sha256')))) {
+    throw '同名发布 EXE 或校验文件已存在；请移走旧产物或指定新的 -OutputDirectory。'
 }
+if ($VerifySetup -and $env:GITHUB_ACTIONS -ne 'true') { throw '安装与卸载自测仅在隔离的 GitHub Actions runner 中执行；本地构建请移除 -VerifySetup。' }
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 $stage = Join-Path $OutputDirectory ('stage-' + [Guid]::NewGuid().ToString('N'))
 $buildRoot = Join-Path $stage 'compiled'
 $packageRoot = Join-Path $stage $packageName
+$installedRoot = ''
 $phase = '初始化'
-Write-Host ('[构建] v' + $version + ' / PowerShell ' + $PSVersionTable.PSVersion + ' / Folder=' + [bool]$Folder)
+Write-Host ('[构建] v' + $version + ' / PowerShell ' + $PSVersionTable.PSVersion + ' / Package=' + $Package + ' / Folder=' + [bool]$Folder)
 if ($env:GITHUB_SHA) { Write-Host ('[构建] 源码提交：' + $env:GITHUB_SHA) }
 
 function Assert-X64Pe([string]$Path) {
@@ -66,6 +71,18 @@ function Assert-PackageFiles([string]$Root) {
             (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $record.sha256) { throw ('资源校验失败：' + $record.path) }
     }
 }
+function Invoke-SetupCommand([string]$Executable, [string]$Arguments) {
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo.FileName = $Executable
+    $process.StartInfo.Arguments = $Arguments
+    $process.StartInfo.UseShellExecute = $false
+    $process.StartInfo.CreateNoWindow = $true
+    try {
+        if (-not $process.Start()) { throw '安装包检查进程启动失败。' }
+        if (-not $process.WaitForExit(90000)) { $process.Kill(); throw '安装包检查超时。' }
+        if ($process.ExitCode -ne 0) { throw ('安装包检查返回：' + $process.ExitCode) }
+    } finally { $process.Dispose() }
+}
 
 try {
     $phase = '编译'; Write-Host ('[构建] ' + $phase)
@@ -82,7 +99,7 @@ try {
     if ((Get-FileHash -LiteralPath $luaPath -Algorithm SHA256).Hash -ne
         (Get-FileHash -LiteralPath (Join-Path $sourceRoot $luaName) -Algorithm SHA256).Hash) { throw '运行时 Lua 脚本与源码不一致。' }
 
-    $phase = '整理内嵌文件'; Write-Host ('[构建] ' + $phase)
+    $phase = '整理发布文件'; Write-Host ('[构建] ' + $phase)
     Copy-PackageFile $mainPath $mainName
     Copy-PackageFile ($mainPath + '.config') ($mainName + '.config')
     Copy-PackageFile $runtimePath ('运行模块/' + $runtimeName)
@@ -113,14 +130,27 @@ try {
     })
     Assert-PackageFiles $packageRoot
 
-    # Check the actual standalone download, in a directory containing only that
-    # EXE. Its child receives the offline guard and a disposable cache/profile.
+    # Portable checks its real launcher. Setup checks the installed GUI on CI;
+    # local Setup builds check the same compiled GUI without installing it.
     $validationRoot = Join-Path $stage '便携检查 with spaces'
     New-Item -ItemType Directory -Path $validationRoot -Force | Out-Null
     $portableCache = Join-Path $validationRoot 'cache'
     $indexPath = Join-Path $stage 'portable-index.json'
     $stagedPortable = Join-Path $stage $portableName
-    if ($Folder) {
+    if (-not $Folder -and $Package -eq 'Setup') {
+        $phase = '生成标准 Setup 安装包'; Write-Host ('[构建] ' + $phase)
+        & (Join-Path $repositoryRoot 'packaging/build-setup.ps1') -PackageDirectory $packageRoot `
+            -OutputDirectory $stage -MainProgram $mainName -Version $version
+        $stagedDistribution = Join-Path $stage $outputName
+    }
+    if (-not $Folder -and $Package -eq 'Setup' -and $VerifySetup) {
+        $phase = '隔离安装自测'; Write-Host ('[构建] ' + $phase)
+        $installedRoot = Join-Path $validationRoot 'installed'
+        Invoke-SetupCommand $stagedDistribution ('/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOICONS /TASKS="" /DIR="' + $installedRoot + '" /LOG="' + (Join-Path $validationRoot 'install.log') + '"')
+        $installedPayload = Join-Path $installedRoot ("versions/v$version")
+        Assert-PackageFiles $installedPayload
+        $validationMain = Join-Path $installedPayload $mainName
+    } elseif ($Folder -or $Package -eq 'Setup') {
         $validationMain = Join-Path $validationRoot $mainName
         Copy-Item -LiteralPath $mainPath -Destination $validationMain
         Copy-Item -LiteralPath ($mainPath + '.config') -Destination ($validationMain + '.config')
@@ -132,8 +162,9 @@ try {
         Assert-AppVersion $stagedPortable
         $validationMain = Join-Path $validationRoot $portableName
         Copy-Item -LiteralPath $stagedPortable -Destination $validationMain
+        $stagedDistribution = $stagedPortable
     }
-    $phase = '离线布局与便携资源检查'; Write-Host ('[构建] ' + $phase)
+    $phase = '离线界面与资源检查'; Write-Host ('[构建] ' + $phase)
     $layoutReport = Join-Path $validationRoot 'layout-check.json'
     $check = New-Object Diagnostics.Process
     $check.StartInfo.FileName = $validationMain
@@ -156,10 +187,16 @@ try {
         if ($layoutChecks.Count -eq 0 -or @($layoutChecks | Where-Object { $_.pass -ne $true }).Count -gt 0) { throw '离线布局报告为空或包含失败项。' }
         Write-Host ('离线布局检查通过：' + $layoutChecks.Count + ' 项；未连接游戏。')
     } finally { $check.Dispose() }
-    if (-not $Folder) {
+    if (-not $Folder -and $Package -eq 'Portable') {
         $indexHash = (Get-FileHash -LiteralPath $indexPath -Algorithm SHA256).Hash.ToLowerInvariant()
         Assert-PackageFiles (Join-Path $portableCache $indexHash)
         Write-Host ('便携资源校验通过：' + $expected.Count + ' 个内嵌文件。')
+    }
+    if ($installedRoot) {
+        $phase = '卸载自测'; Write-Host ('[构建] ' + $phase)
+        Invoke-SetupCommand (Join-Path $installedRoot 'unins000.exe') '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+        if (Test-Path -LiteralPath $validationMain) { throw '卸载后安装的主程序仍然存在。' }
+        $installedRoot = ''
     }
 
     $phase = '输出已验证产物'; Write-Host ('[构建] ' + $phase)
@@ -168,21 +205,27 @@ try {
         Write-Host ('可直接运行的文件夹：' + $folderPath)
         return
     }
-    $portableHash = (Get-FileHash -LiteralPath $stagedPortable -Algorithm SHA256).Hash.ToLowerInvariant()
-    [IO.File]::WriteAllText(($stagedPortable + '.sha256'), ($portableHash + '  ' + $portableName + "`n"), [Text.Encoding]::ASCII)
-    Move-Item -LiteralPath $stagedPortable -Destination $portablePath
-    Move-Item -LiteralPath ($stagedPortable + '.sha256') -Destination ($portablePath + '.sha256')
-    Write-Host ('单文件便携程序：' + $portablePath)
-    Write-Host ('SHA-256：' + $portableHash)
+    $distributionHash = (Get-FileHash -LiteralPath $stagedDistribution -Algorithm SHA256).Hash.ToLowerInvariant()
+    [IO.File]::WriteAllText(($stagedDistribution + '.sha256'), ($distributionHash + '  ' + $outputName + "`n"), [Text.Encoding]::ASCII)
+    Move-Item -LiteralPath $stagedDistribution -Destination $outputPath
+    Move-Item -LiteralPath ($stagedDistribution + '.sha256') -Destination ($outputPath + '.sha256')
+    Write-Host ('发布程序：' + $outputPath)
+    Write-Host ('SHA-256：' + $distributionHash)
+    $signatureStatus = (Get-AuthenticodeSignature -LiteralPath $outputPath).Status
+    Write-Host ('Authenticode 状态：' + $signatureStatus + '；哈希校验不代表杀毒检测通过。')
     if ($env:GITHUB_STEP_SUMMARY) {
-        @("## Windows x64 v$version", '', ('产物：`' + $portableName + '`'), '', ('SHA-256：`' + $portableHash + '`'), '',
-            $verification, '', '单文件便携 EXE 与校验文件已生成；下一步发布到 GitHub Releases。') |
+        @("## Windows x64 v$version", '', ('产物：`' + $outputName + '`'), '', ('SHA-256：`' + $distributionHash + '`'), '',
+            ('Authenticode：' + $signatureStatus), '', $verification, '', '发布 EXE 与校验文件已生成；下一步发布到 GitHub Releases。') |
             Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
     }
 } catch {
     Write-Host ('[构建失败阶段] ' + $phase)
     throw
 } finally {
+    if ($installedRoot -and (Test-Path -LiteralPath (Join-Path $installedRoot 'unins000.exe'))) {
+        try { Invoke-SetupCommand (Join-Path $installedRoot 'unins000.exe') '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' }
+        catch { Write-Warning ('隔离安装目录卸载失败：' + $_.Exception.Message) -WarningAction Continue }
+    }
     $cleanupError = $null
     for ($attempt = 0; $attempt -lt 4; $attempt++) {
         try {
