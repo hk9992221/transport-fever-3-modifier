@@ -1,5 +1,5 @@
-local S=(type(__SZTF3F6)=='table' and __SZTF3F6.protocol==6 and __SZTF3F6) or {protocol=6,version='1.1.5',settings={},backups={},jobs={},lastMessage='已连接游戏内存',lastError='',catalog={},stocks={},worlds={},tasks={},nextScan=0,commandCount=0}
-S.version='1.1.5';S.protocol=6
+local S=(type(__SZTF3F6)=='table' and __SZTF3F6.protocol==6 and __SZTF3F6) or {protocol=6,version='1.1.6',settings={},backups={},jobs={},lastMessage='已连接游戏内存',lastError='',catalog={},stocks={},worlds={},tasks={},nextScan=0,commandCount=0}
+S.version='1.1.6';S.protocol=6
 local CT=api and api.type and api.type.ComponentType or {}
 local isCallable
 local function arr(t) return setmetatable(t or {},{jsonArray=true}) end
@@ -184,22 +184,42 @@ end
 local function stockPosition(owner)
  local ok,matrix=pcall(function()local con=component(owner.construction,CT.CONSTRUCTION);assert(con,'建筑没有可读取的建设组件');assert(con.transf,'建筑没有可读取的变换矩阵');return con.transf end)
  if not ok then return nil,tostring(matrix):gsub('^.-:%d+: ','') end
- local mt=api.type.Mat4f or {};local failures={}
+ local failures={}
  local function attempt(label,getter)
   local success,value=pcall(function()local p=getter();fields(p,{'x','y'},'建筑位置');return {x=p.x,y=p.y} end)
   if success then return value end;failures[#failures+1]=label..'：'..tostring(value):gsub('^.-:%d+: ','')
  end
+ local function method(object,key,label,index)
+  return attempt(label,function()
+   local fn=object and object[key];assert(isCallable(fn),'接口不可调用或未验证 ('..type(fn)..')')
+   return index and fn(matrix,index) or fn(matrix)
+  end)
+ end
+ -- The public API documents both type helpers and instance methods. A binding
+ -- can expose only one of them; protected callable tables still require proof.
+ local mtOK,mt=pcall(function()return api.type.Mat4f end)
  local p
- if isCallable(mt.getTransl) then p=attempt('getTransl',function()return mt.getTransl(matrix)end);if p then return p,'','Mat4f.getTransl' end end
- -- Mat4f uses columns 1..4; the fourth column is the world translation.
- if isCallable(mt.cols) then p=attempt('cols',function()return mt.cols(matrix,4)end);if p then return p,'','Mat4f.cols' end end
- local memberOK,member=pcall(function()return matrix.cols end)
- if memberOK and isCallable(member) then p=attempt('matrix.cols',function()return member(matrix,4)end);if p then return p,'','matrix.cols' end end
- return nil,#failures>0 and table.concat(failures,'；') or '建筑位置接口 getTransl / cols 均不可用，请手动选择库存'
+ if mtOK then
+  p=method(mt,'getTransl','getTransl');if p then return p,'','Mat4f.getTransl' end
+  p=method(mt,'cols','cols',4);if p then return p,'','Mat4f.cols' end
+ end
+ p=method(matrix,'getTransl','matrix.getTransl');if p then return p,'','matrix.getTransl' end
+ p=method(matrix,'cols','matrix.cols',4);if p then return p,'','matrix.cols' end
+ -- Construction.transf is the WORLD transform. Mat4f has 16 column-major
+ -- elements, accessed with Lua's 1-based subscripts, not process offsets.
+ -- Validate the complete affine matrix before taking its translation column.
+ p=attempt('transf[13..15]',function()
+  local values={};for i=1,16 do local v=matrix[i];assert(finite(v),'矩阵第 '..i..' 项不可读或不是有限数');values[i]=v end
+  assert(math.abs(values[4])<.0001 and math.abs(values[8])<.0001 and math.abs(values[12])<.0001 and math.abs(values[16]-1)<.0001,'不是有效的世界仿射矩阵')
+  return {x=values[13],y=values[14]}
+ end)
+ if p then return p,'','Construction.transf[13..15]' end
+ return nil,'建设实体 '..tostring(owner.construction)..' / 矩阵 '..type(matrix)..'；'..table.concat(failures,'；')
 end
 local function stockOptions()
  local r=arr();local seen={}
- for _,ct in ipairs({CT.WAREHOUSE,CT.INDUSTRY,CT.TOWN}) do for _,e in pairs(entities(ct)) do
+ -- Town itself has no stockList/construction fields. Warehouse and Industry do.
+ for _,ct in ipairs({CT.WAREHOUSE,CT.INDUSTRY}) do for _,e in pairs(entities(ct)) do
  local c=component(e,ct);local sid=c and c.stockList or e
  local sl=component(sid,CT.STOCK_LIST)
  if sl and not seen[sid] then seen[sid]=true;local slots=arr()

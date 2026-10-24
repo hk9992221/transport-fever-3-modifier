@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
 
@@ -6,6 +7,42 @@ namespace TransportFever3Trainer
 {
     static class Ui
     {
+        // Bounds are already laid out in monitor pixels. Remember logical point
+        // sizes before handle creation so reparenting / DPI transitions cannot
+        // leave a page scaled twice. All fonts follow the root monitor together.
+        internal sealed class FontSnapshot : IDisposable
+        {
+            readonly Control root;
+            readonly int initialDpi;
+            readonly Dictionary<Control, Font> fonts = new Dictionary<Control, Font>();
+            readonly Dictionary<int, Dictionary<Font, Font>> scaled = new Dictionary<int, Dictionary<Font, Font>>();
+            internal FontSnapshot(Control root) { this.root = root; initialDpi = root.DeviceDpi; Capture(root); }
+            void Capture(Control control)
+            {
+                fonts[control] = control.Font;
+                if (control is NumericUpDown || control is ComboBox) return;
+                foreach (Control child in control.Controls) Capture(child);
+            }
+            internal void Restore()
+            {
+                int dpi = root.DeviceDpi; float factor = dpi / (float)Math.Max(1, initialDpi);
+                foreach (var entry in fonts)
+                {
+                    var control = entry.Key; if (control.IsDisposed) continue;
+                    var font = control.Font; var logical = entry.Value;
+                    if (Math.Abs(font.SizeInPoints - logical.SizeInPoints * factor) <= .01f && font.Style == logical.Style && font.FontFamily.Name == logical.FontFamily.Name) continue;
+                    Font expected = logical;
+                    if (dpi != initialDpi)
+                    {
+                        Dictionary<Font, Font> cache;
+                        if (!scaled.TryGetValue(dpi, out cache)) { cache = new Dictionary<Font, Font>(); scaled[dpi] = cache; }
+                        if (!cache.TryGetValue(logical, out expected)) { expected = new Font(logical.FontFamily, logical.Size * factor, logical.Style, logical.Unit); cache[logical] = expected; }
+                    }
+                    control.Font = expected;
+                }
+            }
+            public void Dispose() { foreach (var cache in scaled.Values) foreach (var font in cache.Values) font.Dispose(); scaled.Clear(); }
+        }
         // The offline layout check can exercise the sizing rules at different scales.
         // Normal runs always use the current control's monitor DPI.
         internal static float LayoutTestScale;
