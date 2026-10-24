@@ -1,0 +1,211 @@
+[
+  {
+    "id": "income",
+    "name": "客货收入倍率",
+    "group": "公司与财务",
+    "kind": "value",
+    "default": 2,
+    "min": 1,
+    "max": 20,
+    "note": "按实际运输收入补发差额",
+    "digits": 2
+  },
+  {
+    "id": "funds",
+    "name": "结余不减",
+    "group": "公司与财务",
+    "kind": "toggle",
+    "default": 1,
+    "min": 0.1,
+    "max": 10,
+    "note": "资金下降后自动补回",
+    "digits": 2
+  },
+  {
+    "id": "no_costs",
+    "name": "免建设与运营费用",
+    "group": "公司与财务",
+    "kind": "toggle",
+    "default": 1,
+    "min": 0.1,
+    "max": 10,
+    "note": "按账户变化补回支出，最高每秒检测 3 次",
+    "digits": 2
+  },
+  {
+    "id": "clear_loans",
+    "name": "免资金清偿贷款",
+    "group": "公司与财务",
+    "kind": "action",
+    "default": 1,
+    "min": 0.1,
+    "max": 10,
+    "note": "归还未清贷款并补回还款资金",
+    "digits": 2
+  },
+  {
+    "id": "balance",
+    "name": "设置公司结余",
+    "group": "公司与财务",
+    "kind": "number_action",
+    "default": 10000000,
+    "min": -1000000000,
+    "max": 1000000000000,
+    "note": "直接设置当前公司账户结余",
+    "digits": 0
+  },
+  {
+    "id": "rank",
+    "name": "设置公司等级",
+    "group": "公司与财务",
+    "kind": "number_action",
+    "default": 15,
+    "min": 1,
+    "max": 15,
+    "note": "补足经验并提升等级；接口支持向上提升",
+    "digits": 0
+  },
+  {
+    "id": "productivity",
+    "name": "产业生产倍率",
+    "group": "产业与建设",
+    "kind": "value",
+    "default": 2,
+    "min": 0.1,
+    "max": 20,
+    "note": "作用于当前及新出现的产业，关闭恢复",
+    "digits": 2
+  },
+  {
+    "id": "industry_alive",
+    "name": "产业不关闭",
+    "group": "产业与建设",
+    "kind": "toggle",
+    "default": 1,
+    "min": 0.1,
+    "max": 10,
+    "note": "暂停产业自动升级、降级与关闭，关闭恢复",
+    "digits": 2
+  },
+  {
+    "id": "vehicle_speed",
+    "name": "载具速度倍率",
+    "group": "载具与运输",
+    "kind": "value",
+    "default": 2,
+    "min": 0.1,
+    "max": 20,
+    "note": "对当前公司的载具生效，关闭恢复",
+    "digits": 2
+  },
+  {
+    "id": "comfort",
+    "name": "载具舒适倍率",
+    "group": "载具与运输",
+    "kind": "value",
+    "default": 2,
+    "min": 0.1,
+    "max": 20,
+    "note": "保留载具原始舒适参数，关闭恢复",
+    "digits": 2
+  },
+  {
+    "id": "no_emissions",
+    "name": "免噪音与污染",
+    "group": "载具与运输",
+    "kind": "toggle",
+    "default": 1,
+    "min": 0.1,
+    "max": 10,
+    "note": "清零当前公司载具排放倍率，关闭恢复",
+    "digits": 2
+  },
+  {
+    "id": "calendar_freeze",
+    "name": "暂停日历",
+    "group": "日历与模拟",
+    "kind": "toggle",
+    "default": 1,
+    "min": 0.1,
+    "max": 10,
+    "note": "暂停日期推进，模拟继续运行",
+    "digits": 2
+  },
+  {
+    "id": "calendar_speed",
+    "name": "日历倍率",
+    "group": "日历与模拟",
+    "kind": "value",
+    "default": 2,
+    "min": 0.1,
+    "max": 20,
+    "note": "调整一天的模拟时长，关闭恢复",
+    "digits": 2
+  },
+  {
+    "id": "simulation_speed",
+    "name": "模拟速度倍率",
+    "group": "日历与模拟",
+    "kind": "value",
+    "default": 2,
+    "min": 1,
+    "max": 10,
+    "note": "模拟倍率为整数，关闭恢复",
+    "digits": 0
+  },
+  {
+    "id": "date",
+    "name": "设置日历日期",
+    "group": "日历与模拟",
+    "kind": "number_action",
+    "default": 20000101,
+    "min": 18500101,
+    "max": 25001231,
+    "note": "输入 YYYYMMDD，检查真实日期",
+    "digits": 0
+  },
+  {
+    "id": "days",
+    "name": "推进或回退日历",
+    "group": "日历与模拟",
+    "kind": "number_action",
+    "default": 30,
+    "min": -36500,
+    "max": 36500,
+    "note": "单位：天；负数回退",
+    "digits": 0
+  },
+  {
+    "id": "experience",
+    "name": "增加公司经验",
+    "group": "额外功能",
+    "kind": "number_action",
+    "default": 1000,
+    "min": 0,
+    "max": 100000000,
+    "note": "增加经验后可提升公司等级",
+    "digits": 0
+  },
+  {
+    "id": "daytime",
+    "name": "设置昼夜时间",
+    "group": "额外功能",
+    "kind": "number_action",
+    "default": 12,
+    "min": 0,
+    "max": 23.99,
+    "note": "小时；12.5 表示 12:30",
+    "digits": 2
+  },
+  {
+    "id": "clouds",
+    "name": "设置云量",
+    "group": "额外功能",
+    "kind": "number_action",
+    "default": 0.5,
+    "min": 0,
+    "max": 1,
+    "note": "0 晴天，1 多云",
+    "digits": 2
+  }
+]
