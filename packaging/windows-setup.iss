@@ -1,4 +1,8 @@
-﻿#ifndef AppVersion
+﻿#if PREPROCVER < EncodeVer(6, 3, 0)
+  #error Inno Setup 6.3 or newer is required to compile this installer.
+#endif
+
+#ifndef AppVersion
   #error "AppVersion is required"
 #endif
 #ifndef PackageRoot

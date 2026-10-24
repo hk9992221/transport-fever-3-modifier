@@ -13,16 +13,27 @@ $PackageDirectory = [IO.Path]::GetFullPath($PackageDirectory)
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 if (-not (Test-Path -LiteralPath (Join-Path $PackageDirectory $MainProgram) -PathType Leaf)) { throw '安装包缺少主程序。' }
 if (-not $InstallerCompiler) {
-    $command = Get-Command ISCC.exe -ErrorAction SilentlyContinue
-    if ($command) { $InstallerCompiler = $command.Source }
-    else { $InstallerCompiler = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6/ISCC.exe' }
+    # Prefer an installed compiler over a PATH proxy (for example a package-
+    # manager shim). A proxy's PE version is not the Inno compiler version.
+    $candidates = @(
+        (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6/ISCC.exe'),
+        (Join-Path $env:ProgramFiles 'Inno Setup 6/ISCC.exe')
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { $InstallerCompiler = $candidate; break }
+    }
+    if (-not $InstallerCompiler) {
+        $command = Get-Command ISCC.exe -CommandType Application -ErrorAction SilentlyContinue
+        if ($command) { $InstallerCompiler = $command.Source }
+    }
 }
-if (-not (Test-Path -LiteralPath $InstallerCompiler -PathType Leaf)) { throw '未找到 Inno Setup 6；请安装后重试，或选择 -Package Portable。' }
-$compilerInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($InstallerCompiler)
-if ($compilerInfo.FileMajorPart -lt 6 -or ($compilerInfo.FileMajorPart -eq 6 -and $compilerInfo.FileMinorPart -lt 3)) { throw 'Setup 构建需要 Inno Setup 6.3 或以上版本。' }
-Write-Host ('[构建] Inno Setup：' + $compilerInfo.FileVersion)
+if (-not $InstallerCompiler -or -not (Test-Path -LiteralPath $InstallerCompiler -PathType Leaf)) { throw '未找到 Inno Setup 6；请安装后重试，或选择 -Package Portable。' }
+$InstallerCompiler = (Resolve-Path -LiteralPath $InstallerCompiler).ProviderPath
+Write-Host ('[构建] Inno Setup 编译器：' + $InstallerCompiler)
+# windows-setup.iss checks PREPROCVER inside the actual compiler engine.
+# Keep the native banner/status output so its engine version appears in CI logs.
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
-$arguments = @('/Qp', ('/DAppVersion=' + $Version), ('/DPackageRoot=' + $PackageDirectory),
+$arguments = @(('/DAppVersion=' + $Version), ('/DPackageRoot=' + $PackageDirectory),
     ('/DOutputRoot=' + $OutputDirectory), ('/DMainProgram=' + $MainProgram), (Join-Path $PSScriptRoot 'windows-setup.iss'))
 & $InstallerCompiler @arguments
 if ($LASTEXITCODE -ne 0) { throw 'Setup 安装包编译失败。' }
