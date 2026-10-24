@@ -57,7 +57,9 @@ namespace TransportFever3Modifier.Portable
             string path = PayloadPath(root, file.path);
             if (Matches(path, file)) return;
             Directory.CreateDirectory(Path.GetDirectoryName(path));
-            string temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            // Keep the temporary name independent of the payload filename. A
+            // nested cache under a long checkout path can otherwise exceed MAX_PATH.
+            string temp = Path.Combine(Path.GetDirectoryName(path), Guid.NewGuid().ToString("N") + ".tmp");
             try
             {
                 using (var input = Assembly.GetExecutingAssembly().GetManifestResourceStream(file.resource))
