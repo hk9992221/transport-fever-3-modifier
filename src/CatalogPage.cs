@@ -437,10 +437,12 @@ namespace TransportFever3Trainer
         internal void ValidateCargoFlow()
         {
             if (Kind != "cargo" || list.Items.Count == 0) throw new InvalidOperationException("缺少离线货物示例。");
+            if (!Visible || !list.IsHandleCreated) throw new InvalidOperationException("货物流程检查必须先显示页面并创建原生列表。");
             var previousCamera = Data.Get(form.State, "camera");
             try
             {
                 list.Items[0].Checked = true; string picked = Data.Str(list.Items[0].Tag, "id");
+                if (!checkedCargo.Contains(picked)) throw new Exception("原生勾选事件未同步货物选择");
                 search.Text = "__no_matching_cargo__";
                 if (list.Items.Count != 0 || !Picked().Any(r => Data.Str(r, "id") == picked)) throw new Exception("搜索清除了已勾选货物");
                 search.Clear();

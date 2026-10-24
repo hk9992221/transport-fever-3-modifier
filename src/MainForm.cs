@@ -417,6 +417,9 @@ namespace TransportFever3Trainer
                 var matching = Data.Json.DeserializeObject("{\"slots\":[{\"allowed\":[\"1\",\"2\"],\"capacity\":1,\"count\":0,\"mixed\":false},{\"allowed\":[\"1\"],\"capacity\":1,\"count\":0,\"mixed\":false}]}");
                 var plan = CargoTargets.Plan(matching, cargoIds, 1);
                 if (plan == null || plan[0] != 1 || plan[1] != 0) throw new Exception("货物槽位匹配异常");
+                // Hidden pages have no native ListView handle yet, so changing
+                // Checked cannot exercise the real ItemChecked event path.
+                ShowPage("cargo"); Arrange(); Application.DoEvents();
                 catalogs.First(c => c.Kind == "cargo").ValidateCargoFlow();
                 report.Add(new { cargo = "nearest-compatible, shared-capacity, matching, selection-preservation", pass = true });
                 var cases = new[] { new { w = 604, h = 401, scale = 1f }, new { w = 640, h = 480, scale = 1f }, new { w = 1280, h = 720, scale = 1f },
