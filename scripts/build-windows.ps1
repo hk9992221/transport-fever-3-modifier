@@ -154,7 +154,7 @@ try {
             ''
             $verification
             ''
-            '请在本次运行的 Artifacts 中下载；产物保留 7 天。'
+            '便携包与校验文件已生成；工作流将在下一步发布到 GitHub Releases。'
         ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
     }
 } finally {
