@@ -23,6 +23,7 @@ static int tableCallable(uintptr_t value){
 typedef struct {const char*expression;const char*keys[6];} CallablePath;
 static const CallablePath callablePaths[]={
  {"api.type.Mat4f.getTransl",{"api","type","Mat4f","getTransl",NULL,NULL}},
+ {"api.type.Mat4f.cols",{"api","type","Mat4f","cols",NULL,NULL}},
  {"api.cmd.makeEntitySetNameCmd",{"api","cmd","makeEntitySetNameCmd",NULL,NULL,NULL}},
  {"api.cmd.debug.makeStockSetCargoAmountCmd",{"api","cmd","debug","makeStockSetCargoAmountCmd",NULL,NULL}},
  {"api.cmd.makeGameSetCalendarSpeedCmd",{"api","cmd","makeGameSetCalendarSpeedCmd",NULL,NULL,NULL}},

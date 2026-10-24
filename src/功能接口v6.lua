@@ -1,5 +1,5 @@
-local S=(type(__SZTF3F6)=='table' and __SZTF3F6.protocol==6 and __SZTF3F6) or {protocol=6,version='1.1.4',settings={},backups={},jobs={},lastMessage='已连接游戏内存',lastError='',catalog={},stocks={},worlds={},tasks={},nextScan=0,commandCount=0}
-S.version='1.1.4';S.protocol=6
+local S=(type(__SZTF3F6)=='table' and __SZTF3F6.protocol==6 and __SZTF3F6) or {protocol=6,version='1.1.5',settings={},backups={},jobs={},lastMessage='已连接游戏内存',lastError='',catalog={},stocks={},worlds={},tasks={},nextScan=0,commandCount=0}
+S.version='1.1.5';S.protocol=6
 local CT=api and api.type and api.type.ComponentType or {}
 local isCallable
 local function arr(t) return setmetatable(t or {},{jsonArray=true}) end
@@ -181,6 +181,22 @@ local function setRank(level)
  if target>s.experience then event('Companies','_debugAddExperience',{entity=S.player,amount=target-s.experience}) end
  S.jobs[#S.jobs+1]={at=now()+.5,level=level};S.lastMessage='等级提升命令已提交'
 end
+local function stockPosition(owner)
+ local ok,matrix=pcall(function()local con=component(owner.construction,CT.CONSTRUCTION);assert(con,'建筑没有可读取的建设组件');assert(con.transf,'建筑没有可读取的变换矩阵');return con.transf end)
+ if not ok then return nil,tostring(matrix):gsub('^.-:%d+: ','') end
+ local mt=api.type.Mat4f or {};local failures={}
+ local function attempt(label,getter)
+  local success,value=pcall(function()local p=getter();fields(p,{'x','y'},'建筑位置');return {x=p.x,y=p.y} end)
+  if success then return value end;failures[#failures+1]=label..'：'..tostring(value):gsub('^.-:%d+: ','')
+ end
+ local p
+ if isCallable(mt.getTransl) then p=attempt('getTransl',function()return mt.getTransl(matrix)end);if p then return p,'','Mat4f.getTransl' end end
+ -- Mat4f uses columns 1..4; the fourth column is the world translation.
+ if isCallable(mt.cols) then p=attempt('cols',function()return mt.cols(matrix,4)end);if p then return p,'','Mat4f.cols' end end
+ local memberOK,member=pcall(function()return matrix.cols end)
+ if memberOK and isCallable(member) then p=attempt('matrix.cols',function()return member(matrix,4)end);if p then return p,'','matrix.cols' end end
+ return nil,#failures>0 and table.concat(failures,'；') or '建筑位置接口 getTransl / cols 均不可用，请手动选择库存'
+end
 local function stockOptions()
  local r=arr();local seen={}
  for _,ct in ipairs({CT.WAREHOUSE,CT.INDUSTRY,CT.TOWN}) do for _,e in pairs(entities(ct)) do
@@ -189,12 +205,8 @@ local function stockOptions()
  if sl and not seen[sid] then seen[sid]=true;local slots=arr()
  for k,st in pairs(sl.stocks) do local i=tonumber(k)-1;local types=api.engine.util.stock.getStockCargoTypes(sid,i);local allowed=arr();for _,v in pairs(types) do allowed[#allowed+1]=v end
  slots[#slots+1]={index=i,cargo=st.cargoType,mixed=st.mixedTypes==true,allowed=allowed,capacity=st.capacity,count=api.engine.system.simEntityAtStockSystem.getStockCount(sid,i),kind=tostring(st.type)} end
- local position;local positionError='建筑位置读取接口 api.type.Mat4f.getTransl 尚未通过验证';local getTransl=api.type.Mat4f and api.type.Mat4f.getTransl
- if isCallable(getTransl) then
-  local ok,p=pcall(function()local con=component(c.construction,CT.CONSTRUCTION);assert(con,'建筑没有可读取的建设组件');local value=getTransl(con.transf);fields(value,{'x','y'},'建筑位置');return {x=value.x,y=value.y} end)
-  if ok then position=p;positionError='' else positionError=tostring(p):gsub('^.-:%d+: ','') end
- end
- r[#r+1]={id=tostring(sid),nameEntity=tostring(e),gameName=gameName(e) or '',name=name(e,ct==CT.WAREHOUSE and '仓库' or ct==CT.TOWN and '城镇库存' or '产业库存'),category=ct==CT.WAREHOUSE and '仓库' or ct==CT.TOWN and '城镇库存' or '产业',position=position,positionError=positionError,slots=slots}
+ local position,positionError,positionSource=stockPosition(c)
+ r[#r+1]={id=tostring(sid),nameEntity=tostring(e),gameName=gameName(e) or '',name=name(e,ct==CT.WAREHOUSE and '仓库' or ct==CT.TOWN and '城镇库存' or '产业库存'),category=ct==CT.WAREHOUSE and '仓库' or ct==CT.TOWN and '城镇库存' or '产业',position=position,positionError=positionError,positionSource=positionSource,slots=slots}
  end end end;return r
 end
 local function scan()

@@ -19,6 +19,33 @@ namespace TransportFever3Trainer
             int units = Math.Max(1, Math.Min(Math.Min(preferred.Width / 16, preferred.Height / 10), Math.Min(maximum.Width / 16, maximum.Height / 10)));
             return new Size(units * 16, units * 10);
         }
+        internal static Rectangle AspectBounds(Rectangle area)
+        {
+            if (area.Width <= 0 || area.Height <= 0) return new Rectangle(area.Location, Size.Empty);
+            int width = area.Width, height = Math.Max(1, (int)Math.Floor(width / 1.6));
+            if (height > area.Height) { height = area.Height; width = Math.Max(1, (int)Math.Floor(height * 1.6)); }
+            return new Rectangle(area.Left + (area.Width - width) / 2, area.Top + (area.Height - height) / 2, width, height);
+        }
+        internal static Size MinimumAspectClient(Size required, Size available)
+        {
+            int units = Math.Max((required.Width + 15) / 16, (required.Height + 9) / 10);
+            units = Math.Max(1, Math.Min(units, Math.Min(available.Width / 16, available.Height / 10)));
+            return new Size(units * 16, units * 10);
+        }
+        internal static Rectangle ResizeAspectBounds(Rectangle proposed, int edge, Size frame, Size current, Size minimum, Size maximum)
+        {
+            int width = Math.Max(1, proposed.Width - frame.Width), height = Math.Max(1, proposed.Height - frame.Height);
+            bool byWidth = edge == 1 || edge == 2 || (edge != 3 && edge != 6 &&
+                Math.Abs(width - current.Width) / (double)Math.Max(1, current.Width) >= Math.Abs(height - current.Height) / (double)Math.Max(1, current.Height));
+            double wanted = byWidth ? width : height * 1.6;
+            int lower = Math.Max(minimum.Width, (int)Math.Ceiling(minimum.Height * 1.6));
+            int upper = Math.Max(1, Math.Min(maximum.Width, (int)Math.Floor(maximum.Height * 1.6)));
+            width = Math.Max(1, (int)Math.Round(Math.Max(Math.Min(lower, upper), Math.Min(wanted, upper))));
+            height = Math.Max(1, (int)Math.Round(width / 1.6));
+            width += frame.Width; height += frame.Height;
+            bool left = edge == 1 || edge == 4 || edge == 7, top = edge == 3 || edge == 4 || edge == 5;
+            return new Rectangle(left ? proposed.Right - width : proposed.Left, top ? proposed.Bottom - height : proposed.Top, width, height);
+        }
         internal static int ButtonWidth(Control button, int logicalMinimum)
         { return Math.Max(Px(button, logicalMinimum), TextRenderer.MeasureText(button.Text, button.Font, Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding).Width + Px(button, 26)); }
         internal static int ButtonHeight(Control button, int logicalMinimum)

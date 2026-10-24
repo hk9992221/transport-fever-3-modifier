@@ -43,7 +43,8 @@ namespace TransportFever3Trainer
         string page = "features", group = "全部", lastSnapshot = "";
         int P(int n) { return Ui.Px(this, n); }
         protected override Size MinimumLogicalSize { get { return new Size(620, 440); } }
-        protected override Size FixedClientLayout { get { return new Size(1280, 800); } }
+        protected override Size PreferredClientLayout { get { return new Size(1280, 800); } }
+        Rectangle LayoutArea { get { return Ui.AspectBounds(ClientRectangle); } }
         public static Label LabelFor(string text, float size = 10, bool bold = false)
         { return new Label { Text = text, ForeColor = Theme.Ink, Font = Theme.F(size, bold), BackColor = Color.Transparent, AutoSize = false, AutoEllipsis = true, UseMnemonic = false }; }
         public static void Enable(Control control, bool value) { if (control.Enabled != value) control.Enabled = value; }
@@ -52,7 +53,7 @@ namespace TransportFever3Trainer
         {
             // All bounds already use monitor-DPI pixels. Do not scale the same
             // dynamically created controls a second time through Form autoscaling.
-            AutoScaleMode = AutoScaleMode.None; FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false;
+            AutoScaleMode = AutoScaleMode.None; FormBorderStyle = FormBorderStyle.Sizable; MaximizeBox = true;
             offline = offlineCheck; Text = "狂热运输3修改器 · v" + Protocol.Version; ClientSize = new Size(1220, 780);
             heading = LabelFor("常用功能", 20, true); heading.Name = "page-heading";
             pageHint = LabelFor("", 9); pageHint.ForeColor = Theme.Muted; pageHint.Name = "page-help";
@@ -108,8 +109,9 @@ namespace TransportFever3Trainer
             if (arranging || heading == null || camera == null) return; arranging = true;
             try
             {
-                int pad = P(16), gap = P(16), sideWidth = P(ClientSize.Width >= P(1000) ? 208 : 144);
-                sidebar.SetBounds(pad, pad, sideWidth, Math.Max(1, ClientSize.Height - pad * 2));
+                var area = LayoutArea;
+                int pad = P(16), gap = P(16), sideWidth = P(area.Width >= P(1000) ? 208 : 144);
+                sidebar.SetBounds(area.Left + pad, area.Top + pad, sideWidth, Math.Max(1, area.Height - pad * 2));
                 bool shortSidebar = sidebar.Height < P(420);
                 mark.SetBounds(P(12), P(18), P(32), P(32));
                 appTitle.SetBounds(P(56), P(14), Math.Max(1, sideWidth - P(68)), P(26));
@@ -137,9 +139,9 @@ namespace TransportFever3Trainer
                     navigationBar.AutoScrollPosition = new Point(-navOffset.X, -navOffset.Y);
                 }
 
-                int contentLeft = sidebar.Right + gap, w = Math.Max(1, ClientSize.Width - contentLeft - pad); bool wide = w >= P(900);
-                bool compactHeader = ClientSize.Height < P(560);
-                header.SetBounds(contentLeft, pad, w, P(compactHeader ? 96 : wide ? 112 : 160));
+                int contentLeft = sidebar.Right + gap, w = Math.Max(1, area.Right - contentLeft - pad); bool wide = w >= P(900);
+                bool compactHeader = area.Height < P(560);
+                header.SetBounds(contentLeft, area.Top + pad, w, P(compactHeader ? 96 : wide ? 112 : 160));
                 online.Visible = stats.Visible = !compactHeader;
                 appCaption.Text = compactHeader ? CaptureReady ? "已连接" : "未连接" : "修改器";
                 appCaption.ForeColor = compactHeader && CaptureReady ? Theme.Green : Theme.Muted;
@@ -149,8 +151,8 @@ namespace TransportFever3Trainer
                 if (wide) stats.SetBounds(w / 2 + P(16), P(20), w / 2 - P(36), P(72));
                 else stats.SetBounds(P(20), P(104), Math.Max(1, w - P(40)), P(48));
                 int pageTop = header.Bottom + P(12), footer = P(28);
-                pages.SetBounds(contentLeft, pageTop, w, Math.Max(1, ClientSize.Height - pageTop - pad - footer));
-                status.SetBounds(contentLeft + P(2), ClientSize.Height - pad - footer + P(4), Math.Max(1, w - P(4)), footer);
+                pages.SetBounds(contentLeft, pageTop, w, Math.Max(1, area.Bottom - pageTop - pad - footer));
+                status.SetBounds(contentLeft + P(2), area.Bottom - pad - footer + P(4), Math.Max(1, w - P(4)), footer);
                 ArrangeFeatures(); foreach (var catalog in catalogs) catalog.Arrange(); camera.Arrange();
             }
             finally { arranging = false; }
@@ -312,7 +314,7 @@ namespace TransportFever3Trainer
                     if (!success) CancelQueued(message); SendNext();
                 }
                 online.Text = CaptureReady ? Busy ? "● 游戏已连接 · 操作执行中" : "● 游戏已连接" : "● 游戏未连接";
-                if (ClientSize.Height < P(560)) { appCaption.Text = CaptureReady ? "已连接" : "未连接"; appCaption.ForeColor = CaptureReady ? Theme.Green : Theme.Muted; }
+                if (LayoutArea.Height < P(560)) { appCaption.Text = CaptureReady ? "已连接" : "未连接"; appCaption.ForeColor = CaptureReady ? Theme.Green : Theme.Muted; }
                 foreach (var catalog in catalogs) catalog.UpdateActions(); camera.UpdateState(); Enable(reset, CaptureReady && !Busy);
             }
             catch (Exception e)
@@ -340,6 +342,7 @@ namespace TransportFever3Trainer
                     "\r\n货物：" + Data.Rows(Data.Get(State, "catalog")).Count + "\r\n城镇 / 产业：" + Data.Rows(Data.Get(State, "worlds")).Count +
                     "\r\n镜头中心：" + (CameraData.HasCenter(Data.Get(State, "camera")) ? Data.Num(Data.Get(State, "camera"), "x").ToString("N1") + ", " + Data.Num(Data.Get(State, "camera"), "y").ToString("N1") : "未读取") +
                     "\r\n镜头读取错误：" + Data.Str(State, "cameraError", "无") + "\r\n有坐标的库存：" + Data.Rows(Data.Get(State, "stocks")).Count(r => CameraData.HasCenter(Data.Get(r, "position"))) +
+                    "\r\n库存坐标错误：" + (Data.Rows(Data.Get(State, "stocks")).Select(r => Data.Str(r, "positionError")).FirstOrDefault(e => e.Length > 0) ?? "无") +
                     "\r\n命令计数：" + Data.Num(d, "commands") + "\r\n待恢复参数：" + Data.Num(d, "backups") +
                     "\r\n\r\n状态：" + Data.Str(State, "message") + "\r\n错误：" + Data.Str(State, "error", "无") +
                     "\r\n\r\n游戏名称优先；读不到时可设置本工具当前地图会话的显示名称。" +
@@ -409,15 +412,30 @@ namespace TransportFever3Trainer
                 bool accessBlocked = false; try { BuildMode.RequireLiveAccess(); } catch (InvalidOperationException) { accessBlocked = true; }
                 if (!accessBlocked) throw new InvalidOperationException("离线检查没有阻止游戏连接。");
                 report.Add(new { buildGuard = "live game access blocked", pass = true });
-                if (AutoScaleMode != AutoScaleMode.None || FormBorderStyle != FormBorderStyle.FixedSingle || MaximizeBox)
-                    throw new Exception("主窗口未使用固定比例和手动 DPI 布局");
+                if (AutoScaleMode != AutoScaleMode.None || FormBorderStyle != FormBorderStyle.Sizable || !MaximizeBox)
+                    throw new Exception("主窗口未启用等比缩放、最大化和手动 DPI 布局");
                 foreach (var maximum in new[] { new Size(1280, 720), new Size(1920, 1080), new Size(2560, 1440), new Size(800, 600) })
                 {
                     var fit = Ui.FitFixedClient(new Size(2560, 1600), maximum);
                     if (fit.Width > maximum.Width || fit.Height > maximum.Height || fit.Width * 10 != fit.Height * 16)
                         throw new Exception("固定比例窗口超出屏幕或比例错误");
                 }
-                report.Add(new { window = "16:10, fixed border, single DPI scaling", pass = true });
+                foreach (int edge in Enumerable.Range(1, 8)) foreach (var proposed in new[] { new Rectangle(20, 30, 1500, 700), new Rectangle(20, 30, 800, 950) })
+                {
+                    var resized = Ui.ResizeAspectBounds(proposed, edge, new Size(16, 39), new Size(1280, 800), new Size(704, 440), new Size(1904, 1000));
+                    int cw = resized.Width - 16, ch = resized.Height - 39;
+                    if (Math.Abs(cw * 10 - ch * 16) > 8 || cw < 704 || ch < 440 || cw > 1904 || ch > 1000)
+                        throw new Exception("拖动缩放时比例或边界错误");
+                    if ((edge == 1 || edge == 4 || edge == 7) && resized.Right != proposed.Right || (edge == 3 || edge == 4 || edge == 5) && resized.Bottom != proposed.Bottom)
+                        throw new Exception("拖动缩放时对边未保持固定");
+                }
+                var restoreWindow = Bounds;
+                WindowState = FormWindowState.Maximized; Application.DoEvents();
+                var maximizedArea = LayoutArea;
+                if (!ClientRectangle.Contains(maximizedArea) || Math.Abs(maximizedArea.Width * 10 - maximizedArea.Height * 16) > 16)
+                    throw new Exception("最大化后的等比内容区域无效");
+                WindowState = FormWindowState.Normal; Bounds = restoreWindow; Application.DoEvents();
+                report.Add(new { window = "16:10, resizable from every edge, maximize enabled, single DPI scaling", pass = true });
                 var cameraReply = Data.Json.DeserializeObject("{\"ok\":true,\"request\":\"camera-test\",\"world\":1,\"nameScope\":\"layout\",\"camera\":{\"x\":12,\"y\":34},\"stocks\":[]}");
                 var freshCamera = CameraData.ReadReply(cameraReply, "camera-test", "1", "layout", true);
                 if (!CameraData.HasCenter(Data.Get(freshCamera, "camera")) || CameraData.HasPose(Data.Get(freshCamera, "camera"))) throw new Exception("镜头中心和完整参数未分别验证");
@@ -473,6 +491,7 @@ namespace TransportFever3Trainer
                     foreach (string id in pageViews.Keys)
                     {
                         ShowPage(id); SelectFirst(); Arrange(); Application.DoEvents(); var issues = new List<string>(); Audit(this, issues);
+                        if (id == "cargo" || id == "world") catalogs.First(c => c.Kind == id).ValidateDetailScroll();
                         if (sidebar.Parent != this || navigationBar.Parent != sidebar || actions.Parent != sidebar || sidebar.Right >= pages.Left)
                             issues.Add("page navigation must stay in a separate left sidebar");
                         if (id == "features")
