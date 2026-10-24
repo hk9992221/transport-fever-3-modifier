@@ -1,4 +1,5 @@
 name: Windows x64 手动发布
+run-name: Windows portable · ${{ github.ref_name }} · ${{ github.sha }}
 
 on:
   workflow_dispatch:
@@ -42,7 +43,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Zig 无法运行。' }
           Split-Path $zig -Parent | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      - name: 编译、检查并生成便携包
+      - name: 编译、检查并生成单文件便携 EXE
         run: ./scripts/build-windows.ps1
 
       - name: 发布到 GitHub Releases
@@ -56,8 +57,8 @@ jobs:
           if (-not $match.Success) { throw '无法从源码读取发布版本。' }
           $version = $match.Groups['value'].Value
           $tag = 'v' + $version
-          $zip = Join-Path $env:GITHUB_WORKSPACE "dist/TransportFever3Modifier-v$version-windows-x64.zip"
-          $assets = @($zip, ($zip + '.sha256'))
+          $exe = Join-Path $env:GITHUB_WORKSPACE "dist/TransportFever3Modifier-v$version-windows-x64-portable.exe"
+          $assets = @($exe, ($exe + '.sha256'))
           foreach ($asset in $assets) {
             if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) {
               throw ('缺少发布附件：' + $asset)
@@ -65,15 +66,17 @@ jobs:
           }
           $notes = Join-Path $env:RUNNER_TEMP 'tf3-release-notes.md'
           @(
-            "Windows x64 便携版 v$version。完整解压 ZIP 后运行其中的主程序。"
+            "Windows x64 单文件便携版 v$version。下载 portable.exe 后直接运行，无需解压或安装。"
             ''
-            '附件包含便携 ZIP 和 SHA-256 校验文件；运行模块与 Lua 脚本已包含在 ZIP 内。'
+            '附件包含便携 EXE 和 SHA-256 校验文件；主程序、运行模块、Lua 与许可说明均已内嵌，启动时自动释放。'
+            ''
+            '设置保存在便携 EXE 旁的“配置”目录；目录不可写时使用本机用户数据目录。运行文件按内容缓存，新版本不会覆盖游戏仍在使用的旧模块。'
             ''
             '浅色界面采用固定左侧导航。货物支持最近库存推荐，超出容量时自动按剩余空间添加，并显示实际结果。优先读取游戏内名称。'
             ''
             ("源码提交：https://github.com/${env:GH_REPO}/commit/${env:GITHUB_SHA}")
             ''
-            '构建完成编译、x64 架构、版本、脚本、离线布局及 ZIP 完整性检查；未运行游戏，不代表游戏功能已实测。'
+            '构建从独立目录启动单文件 EXE，完成编译、x64 架构、版本、脚本、离线布局及释放资源 SHA-256 检查；未运行游戏，不代表游戏功能已实测。'
           ) | Out-File -FilePath $notes -Encoding utf8
 
           $tagCommit = & gh api "repos/${env:GH_REPO}/commits/$tag" --jq '.sha' 2>$null

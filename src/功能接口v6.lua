@@ -1,5 +1,5 @@
-local S=(type(__SZTF3F6)=='table' and __SZTF3F6.protocol==6 and __SZTF3F6) or {protocol=6,version='1.1.2',settings={},backups={},jobs={},lastMessage='已连接游戏内存',lastError='',catalog={},stocks={},worlds={},tasks={},nextScan=0,commandCount=0}
-S.version='1.1.2';S.protocol=6
+local S=(type(__SZTF3F6)=='table' and __SZTF3F6.protocol==6 and __SZTF3F6) or {protocol=6,version='1.1.3',settings={},backups={},jobs={},lastMessage='已连接游戏内存',lastError='',catalog={},stocks={},worlds={},tasks={},nextScan=0,commandCount=0}
+S.version='1.1.3';S.protocol=6
 local CT=api and api.type and api.type.ComponentType or {}
 local isCallable
 local function arr(t) return setmetatable(t or {},{jsonArray=true}) end
