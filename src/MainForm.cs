@@ -23,10 +23,10 @@ namespace TransportFever3Trainer
         readonly bool offline;
         Bridge bridge; bool connecting, sending, closing, arranging;
         readonly Queue<RequestItem> requests = new Queue<RequestItem>(); RequestItem activeRequest;
-        readonly Surface header = new Surface();
+        readonly Surface sidebar = new Surface { Name = "sidebar" }, header = new Surface { Name = "page-header" };
         readonly Panel pages = new Panel();
         readonly FlowLayoutPanel navigationBar = new FlowLayoutPanel(), actions = new FlowLayoutPanel();
-        readonly Label heading, stats, status, online;
+        readonly Label heading, stats, status, online, appTitle, appCaption;
         readonly AppMark mark = new AppMark();
         readonly PillButton connect, reset;
         readonly ToolTip tooltips = new ToolTip();
@@ -54,10 +54,15 @@ namespace TransportFever3Trainer
             stats = LabelFor("连接游戏后显示公司与时间信息", 10); stats.ForeColor = Theme.Muted;
             online = LabelFor("● 游戏未连接", 10); online.ForeColor = Theme.Muted;
             status = LabelFor("请进入地图，再连接游戏。", 9); status.ForeColor = Theme.Muted; status.Name = "status-message";
-            header.Controls.Add(mark); header.Controls.Add(heading); header.Controls.Add(stats); header.Controls.Add(online);
-            Controls.Add(header); Controls.Add(navigationBar); Controls.Add(actions); Controls.Add(pages); Controls.Add(status);
-            pages.BackColor = navigationBar.BackColor = actions.BackColor = Theme.Back;
-            navigationBar.WrapContents = actions.WrapContents = true;
+            appTitle = LabelFor("狂热运输 3", 10, true); appCaption = LabelFor("修改器", 9); appCaption.ForeColor = Theme.Muted;
+            sidebar.Controls.Add(mark); sidebar.Controls.Add(appTitle); sidebar.Controls.Add(appCaption);
+            sidebar.Controls.Add(navigationBar); sidebar.Controls.Add(actions);
+            header.Controls.Add(heading); header.Controls.Add(stats); header.Controls.Add(online);
+            Controls.Add(sidebar); Controls.Add(header); Controls.Add(pages); Controls.Add(status);
+            pages.BackColor = Theme.Back; navigationBar.BackColor = actions.BackColor = Theme.Card;
+            navigationBar.Name = "page-navigation"; actions.Name = "sidebar-actions";
+            navigationBar.FlowDirection = actions.FlowDirection = FlowDirection.TopDown;
+            navigationBar.WrapContents = actions.WrapContents = false; navigationBar.AutoScroll = true;
             string[] names = { "常用功能", "货物添加", "世界管理", "镜头书签", "诊断" }, ids = { "features", "cargo", "world", "camera", "diagnostics" };
             for (int i = 0; i < names.Length; i++)
             {
@@ -98,22 +103,44 @@ namespace TransportFever3Trainer
             if (arranging || heading == null || camera == null) return; arranging = true;
             try
             {
-                int pad = P(16), w = Math.Max(1, ClientSize.Width - pad * 2); bool wide = w >= P(900);
-                header.SetBounds(pad, pad, w, P(wide ? 92 : 128));
-                mark.SetBounds(P(18), P(20), P(44), P(44));
-                heading.SetBounds(P(78), P(14), Math.Max(1, wide ? w / 2 - P(88) : w - P(96)), P(36));
-                online.SetBounds(P(80), P(54), Math.Max(1, wide ? w / 2 - P(88) : w - P(100)), P(24));
-                if (wide) stats.SetBounds(w / 2 + P(16), P(20), w / 2 - P(36), P(58));
-                else stats.SetBounds(P(80), P(86), Math.Max(1, w - P(100)), P(34));
-                foreach (PillButton button in navigationBar.Controls)
-                { button.Size = new Size(P(114), P(35)); button.Margin = new Padding(0, 0, P(8), P(7)); }
-                navigationBar.SetBounds(pad, header.Bottom + P(10), w, Ui.FlowHeight(navigationBar, w, P(42)));
+                int pad = P(16), gap = P(16), sideWidth = P(ClientSize.Width >= P(1000) ? 208 : 144);
+                sidebar.SetBounds(pad, pad, sideWidth, Math.Max(1, ClientSize.Height - pad * 2));
+                bool shortSidebar = sidebar.Height < P(420);
+                mark.SetBounds(P(12), P(18), P(32), P(32));
+                appTitle.SetBounds(P(56), P(14), Math.Max(1, sideWidth - P(68)), P(26));
+                appCaption.SetBounds(P(56), P(42), Math.Max(1, sideWidth - P(68)), P(22));
+                int innerWidth = sideWidth - P(24), actionHeight = P(shortSidebar ? 34 : 36);
+                int actionGap = P(8), actionTotal = actionHeight * actions.Controls.Count + actionGap * (actions.Controls.Count - 1);
+                actions.SetBounds(P(12), Math.Max(P(72), sidebar.Height - P(16) - actionTotal), innerWidth, actionTotal);
                 foreach (PillButton button in actions.Controls)
-                { button.Size = new Size(P(150), P(35)); button.Margin = new Padding(0, 0, P(8), P(7)); }
-                actions.SetBounds(pad, navigationBar.Bottom + P(2), w, Ui.FlowHeight(actions, w, P(42)));
-                int pageTop = actions.Bottom + P(6), footer = P(28);
-                pages.SetBounds(pad, pageTop, w, Math.Max(1, ClientSize.Height - pageTop - pad - footer));
-                status.SetBounds(pad + P(2), ClientSize.Height - pad - footer + P(4), Math.Max(1, w - P(4)), footer);
+                { button.Size = new Size(innerWidth, actionHeight); button.Margin = new Padding(0, 0, 0, button == reset ? 0 : actionGap); }
+                int navTop = P(shortSidebar ? 72 : 92), navHeight = P(shortSidebar ? 32 : 40), navGap = P(shortSidebar ? 6 : 8);
+                int navTotal = navigation.Count * navHeight + Math.Max(0, navigation.Count - 1) * navGap;
+                var navOffset = navigationBar.AutoScrollPosition; navigationBar.SuspendLayout();
+                try
+                {
+                    navigationBar.AutoScroll = false;
+                    navigationBar.SetBounds(P(12), navTop, innerWidth, Math.Max(1, actions.Top - P(16) - navTop));
+                    int navWidth = Math.Max(1, innerWidth - (navTotal > navigationBar.Height ? P(19) : 0));
+                    int index = 0;
+                    foreach (PillButton button in navigationBar.Controls)
+                    { button.Size = new Size(navWidth, navHeight); button.Margin = new Padding(0, 0, 0, ++index == navigation.Count ? 0 : navGap); }
+                }
+                finally
+                {
+                    navigationBar.AutoScroll = true; navigationBar.ResumeLayout(true);
+                    navigationBar.AutoScrollPosition = new Point(-navOffset.X, -navOffset.Y);
+                }
+
+                int contentLeft = sidebar.Right + gap, w = Math.Max(1, ClientSize.Width - contentLeft - pad); bool wide = w >= P(900);
+                header.SetBounds(contentLeft, pad, w, P(wide ? 92 : 128));
+                heading.SetBounds(P(20), P(14), Math.Max(1, wide ? w / 2 - P(30) : w - P(40)), P(36));
+                online.SetBounds(P(20), P(54), Math.Max(1, wide ? w / 2 - P(30) : w - P(40)), P(24));
+                if (wide) stats.SetBounds(w / 2 + P(16), P(20), w / 2 - P(36), P(58));
+                else stats.SetBounds(P(20), P(86), Math.Max(1, w - P(40)), P(34));
+                int pageTop = header.Bottom + P(12), footer = P(28);
+                pages.SetBounds(contentLeft, pageTop, w, Math.Max(1, ClientSize.Height - pageTop - pad - footer));
+                status.SetBounds(contentLeft + P(2), ClientSize.Height - pad - footer + P(4), Math.Max(1, w - P(4)), footer);
                 ArrangeFeatures(); foreach (var catalog in catalogs) catalog.Arrange(); camera.Arrange();
             }
             finally { arranging = false; }
@@ -363,6 +390,16 @@ namespace TransportFever3Trainer
                     foreach (string id in pageViews.Keys)
                     {
                         ShowPage(id); SelectFirst(); Arrange(); Application.DoEvents(); var issues = new List<string>(); Audit(this, issues);
+                        if (sidebar.Parent != this || navigationBar.Parent != sidebar || actions.Parent != sidebar || sidebar.Right >= pages.Left)
+                            issues.Add("page navigation must stay in a separate left sidebar");
+                        if (id == "features")
+                        {
+                            var sideBounds = sidebar.Bounds; var navPosition = navigationBar.PointToScreen(Point.Empty);
+                            featureScroll.AutoScrollPosition = new Point(0, P(100)); Application.DoEvents();
+                            if (sidebar.Bounds != sideBounds || navigationBar.PointToScreen(Point.Empty) != navPosition)
+                                issues.Add("sidebar moved when page content scrolled");
+                            featureScroll.AutoScrollPosition = Point.Empty;
+                        }
                         if (issues.Count > 0) throw new InvalidOperationException(id + " " + test.w + "x" + test.h + ": " + string.Join("; ", issues));
                         report.Add(new { page = id, width = test.w, height = test.h, layoutScale = test.scale, monitorDpi = DeviceDpi, pass = true });
                         if (id == "world") foreach (int variant in new[] { 1, 2 })

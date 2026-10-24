@@ -31,7 +31,7 @@ namespace TransportFever3Trainer
         }
         internal static int FeatureColumns(Control parent, int width)
         {
-            return Math.Max(1, Math.Min(3, (width + Px(parent, 16)) / (Px(parent, 480) + Px(parent, 16))));
+            return Math.Max(1, Math.Min(3, (width + Px(parent, 16)) / (Px(parent, 440) + Px(parent, 16))));
         }
     }
 }
