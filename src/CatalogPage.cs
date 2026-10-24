@@ -31,7 +31,7 @@ namespace TransportFever3Trainer
         string filter = "全部", signature = "", stockSignature = "", targetPlanSignature = "", renameRequest, lastScope = "";
         string cargoRequest, renameEntityId; List<string> pendingCargoIds;
         readonly Stopwatch renameWatch = new Stopwatch(), cargoWatch = new Stopwatch();
-        bool populating, arranging, settingName, nameDirty, cargoDelayed;
+        bool populating, arranging, settingName, nameDirty, cargoDelayed, recommending;
         int P(int value) { return Ui.Px(this, value); }
 
         public CatalogPage(MainForm parent, string kind)
@@ -112,8 +112,8 @@ namespace TransportFever3Trainer
                 targetSummary = Label("", 9); targetSummary.ForeColor = Theme.Muted;
                 recommendation = new Surface { BackColor = Theme.AccentSoft, Name = "cargo-recommendation" }; detailContent.Controls.Add(recommendation);
                 recommendationText = MainForm.LabelFor("先选择货物，再推荐附近的库存。", 10); recommendation.Controls.Add(recommendationText);
-                useRecommended = new PillButton { Text = "使用推荐", Name = "use-recommended-stock" };
-                useRecommended.Click += delegate { if (recommended == null) return; for (int i = 0; i < targets.Items.Count; i++) if (((CargoTarget)targets.Items[i]).Id == recommended.Id) { targets.SelectedIndex = i; break; } };
+                useRecommended = new PillButton { Text = "读取镜头并推荐", Name = "use-recommended-stock" };
+                useRecommended.Click += delegate { RequestRecommendation(); };
                 recommendation.Controls.Add(useRecommended);
                 locateTarget = Button("定位所选建筑", false, delegate { var target = targets.SelectedItem as CargoTarget; if (target != null) form.Request(new { op = "focus", id = Data.Str(target.Row, "nameEntity") }); });
             }
@@ -165,17 +165,20 @@ namespace TransportFever3Trainer
             try
             {
                 int w = ClientSize.Width, gap = P(14); bool compact = Height < P(300);
-                search.SetBounds(0, P(4), Math.Max(1, w - P(100)), P(32)); clearSearch.SetBounds(Math.Max(0, w - P(92)), P(4), P(92), P(32));
+                int clearWidth = Ui.ButtonWidth(clearSearch, 92), searchHeight = Ui.ButtonHeight(clearSearch, 32);
+                search.SetBounds(0, P(4), Math.Max(1, w - clearWidth - P(8)), searchHeight); clearSearch.SetBounds(Math.Max(0, w - clearWidth), P(4), clearWidth, searchHeight);
+                int filterHeight = filters.Controls.Cast<Control>().Select(b => Ui.ButtonHeight(b, 32)).DefaultIfEmpty(P(32)).Max();
                 foreach (PillButton button in filters.Controls)
-                { button.Size = new Size(P(button.Text == "最近使用" ? compact ? 88 : 100 : button.Text.Length <= 2 ? compact ? 50 : 64 : compact ? 74 : 86), P(32)); button.Margin = new Padding(0, 0, P(compact ? 6 : 7), P(7)); }
-                filters.SetBounds(0, P(46), w, Ui.FlowHeight(filters, w, P(39)));
+                { button.Size = new Size(Ui.ButtonWidth(button, button.Text == "最近使用" ? compact ? 88 : 100 : button.Text.Length <= 2 ? compact ? 50 : 64 : compact ? 74 : 86), filterHeight); button.Margin = new Padding(0, 0, P(compact ? 6 : 7), P(7)); }
+                filters.SetBounds(0, search.Bottom + P(10), w, Ui.FlowHeight(filters, w, filterHeight + P(7)));
                 resultCount.SetBounds(P(2), filters.Bottom + P(2), Math.Max(1, w - P(4)), P(25));
                 resultCount.Visible = !compact;
                 bool stack = w < P(760);
-                int top = compact ? filters.Bottom + P(8) : resultCount.Bottom + P(5), actionHeight = P(compact ? 62 : stack ? 76 : 64);
+                int actionButtonHeight = Ui.ButtonHeight(act, compact ? 28 : 32);
+                int top = compact ? filters.Bottom + P(8) : resultCount.Bottom + P(5), actionHeight = Math.Max(P(compact ? 62 : stack ? 76 : 64), actionButtonHeight + P(compact || stack ? 34 : 28));
                 actionBar.SetBounds(0, Math.Max(0, Height - actionHeight), w, actionHeight);
                 actionSummary.SetBounds(P(12), P(compact ? 4 : 6), Math.Max(1, compact || stack ? w - P(24) : w - P(232)), P(compact ? 24 : stack ? 27 : 50));
-                act.SetBounds(compact || stack ? P(12) : w - P(204), P(compact ? 30 : stack ? 37 : 14), compact || stack ? Math.Max(1, w - P(24)) : P(192), P(compact ? 28 : 32));
+                act.SetBounds(compact || stack ? P(12) : w - P(204), P(compact ? 30 : stack ? 37 : 14), compact || stack ? Math.Max(1, w - P(24)) : P(192), actionButtonHeight);
                 body.SetBounds(0, top, w, Math.Max(0, actionBar.Top - P(compact ? 8 : 10) - top));
                 body.AutoScroll = stack;
                 body.AutoScrollMinSize = Size.Empty;
@@ -192,18 +195,18 @@ namespace TransportFever3Trainer
                 detailViewport.AutoScroll = !stack;
                 int dw = Math.Max(1, detailWidth - P(24) - (!stack ? P(19) : 0));
                 int pad = P(8), inner = Math.Max(1, dw - pad * 2);
-                title.SetBounds(pad, P(6), inner, P(52));
-                description.SetBounds(pad, P(66), inner, P(46));
-                selection.SetBounds(pad, P(117), inner, P(24));
-                int y = P(151);
+                title.SetBounds(pad, P(6), inner, Ui.WrappedHeight(title, inner, 36));
+                description.SetBounds(pad, title.Bottom + P(10), inner, Ui.WrappedHeight(description, inner, 28));
+                selection.SetBounds(pad, description.Bottom + P(8), inner, Ui.WrappedHeight(selection, inner, 24));
+                int y = selection.Bottom + P(14);
                 if (targets != null)
                 {
                     targetLabel.SetBounds(pad, y, inner, P(28)); y += P(34);
-                    recommendation.SetBounds(pad, y, inner, P(106));
-                    recommendationText.SetBounds(P(10), P(7), Math.Max(1, inner - P(20)), P(50));
-                    useRecommended.SetBounds(P(10), P(64), Math.Max(1, inner - P(20)), P(32)); y += P(116);
+                    recommendationText.SetBounds(P(10), P(7), Math.Max(1, inner - P(20)), Ui.WrappedHeight(recommendationText, inner - P(20), 44));
+                    useRecommended.SetBounds(P(10), recommendationText.Bottom + P(10), Math.Max(1, inner - P(20)), Ui.ButtonHeight(useRecommended, 32));
+                    recommendation.SetBounds(pad, y, inner, useRecommended.Bottom + P(10)); y = recommendation.Bottom + P(10);
                     targets.SetBounds(pad, y, inner, P(34)); y += P(42);
-                    targetSummary.SetBounds(pad, y, inner, P(48)); y += P(56);
+                    targetSummary.SetBounds(pad, y, inner, Ui.WrappedHeight(targetSummary, inner, 48)); y = targetSummary.Bottom + P(8);
                     locateTarget.SetBounds(pad, y, inner, P(32)); y += P(46);
                 }
                 foreach (var pair in Numbers)
@@ -230,9 +233,9 @@ namespace TransportFever3Trainer
                     rename.SetBounds(pad, y, inner, P(36)); y += P(44);
                     localName.Visible = selected == null || Data.Str(selected, "gameName").Length == 0;
                     if (localName.Visible) { localName.SetBounds(pad, y, inner, P(34)); y += P(42); }
-                    nameHint.SetBounds(pad, y, inner, P(56)); y += P(62);
+                    nameHint.SetBounds(pad, y, inner, Ui.WrappedHeight(nameHint, inner, 56)); y = nameHint.Bottom + P(6);
                 }
-                footnote.SetBounds(pad, y, inner, P(62)); y += P(72);
+                footnote.SetBounds(pad, y, inner, Ui.WrappedHeight(footnote, inner, 48)); y = footnote.Bottom + P(10);
                 detailContent.SetBounds(0, 0, dw, y);
                 detailViewport.AutoScrollMinSize = new Size(0, y);
                 if (stack)
@@ -246,7 +249,7 @@ namespace TransportFever3Trainer
         {
             if (lastScope != form.NameScope)
             {
-                lastScope = form.NameScope; selected = null; checkedCargo.Clear(); nameDirty = false;
+                lastScope = form.NameScope; selected = null; checkedCargo.Clear(); nameDirty = false; recommending = false;
                 renameRequest = cargoRequest = null; pendingCargoIds = null; signature = stockSignature = targetPlanSignature = "";
             }
             var next = Data.Rows(data); if (Kind == "cargo") next = next.Where(x => Data.Str(x, "id") != "0").ToList();
@@ -306,6 +309,33 @@ namespace TransportFever3Trainer
             var picks = rows.Where(x => checkedCargo.Contains(Data.Str(x, "id"))).ToList();
             if (picks.Count == 0 && selected != null) picks.Add(selected); return picks;
         }
+        void RequestRecommendation()
+        {
+            if (recommending || cargoRequest != null || !Picked().Any()) return;
+            string scope = form.NameScope; recommending = true; UpdateActions();
+            form.ReadCamera(true, delegate(bool success, string message) {
+                if (scope != form.NameScope) return;
+                recommending = false;
+                if (success)
+                {
+                    stockSignature = targetPlanSignature = ""; FillTargets();
+                    if (recommended != null) for (int i = 0; i < targets.Items.Count; i++)
+                        if (((CargoTarget)targets.Items[i]).Id == recommended.Id) { targets.SelectedIndex = i; break; }
+                }
+                UpdateActions();
+                form.Notify(!success ? "读取当前镜头失败：" + message : recommended == null ? RecommendationProblem(Picked().Count()) : "已按当前镜头推荐：" + recommended.Name, !success || recommended == null);
+            });
+        }
+        string RecommendationProblem(int pickedCount)
+        {
+            if (pickedCount == 0) return "选择货物后，点击“读取镜头并推荐”。";
+            if (pickedCount > 64) return "一次最多选择 64 种货物，请减少勾选。";
+            if (!CameraData.HasCenter(Data.Get(form.State, "camera")))
+            { string error = Data.Str(form.State, "cameraError"); return error.Length == 0 ? "尚未取得镜头中心，点击下方按钮重新读取。" : "镜头读取失败：" + error; }
+            if (!targetChoices.Any(t => t.Fits)) return "镜头已读取，暂无有空位的兼容库存。";
+            var missing = targetChoices.FirstOrDefault(t => t.Fits && !CameraData.HasCenter(Data.Get(t.Row, "position")));
+            return "镜头已读取，兼容建筑的位置不可用。" + (missing == null ? "请手动选择库存。" : Data.Str(missing.Row, "positionError", "请手动选择库存。"));
+        }
         void FillTargets()
         {
             if (targets == null) return;
@@ -358,8 +388,9 @@ namespace TransportFever3Trainer
             }
             var picks = Picked().ToList(); bool online = form.CaptureReady && !form.Busy;
             resultCount.Text = "显示 " + list.Items.Count + " / " + rows.Count + (Kind == "cargo" ? " · 已选 " + picks.Count + " 种" : "");
-            MainForm.Enable(clearSearch, search.Text.Length > 0 && cargoRequest == null);
-            MainForm.Enable(search, cargoRequest == null); MainForm.Enable(list, cargoRequest == null); MainForm.Enable(filters, cargoRequest == null);
+            bool choosing = cargoRequest == null && !recommending;
+            MainForm.Enable(clearSearch, search.Text.Length > 0 && choosing);
+            MainForm.Enable(search, choosing); MainForm.Enable(list, choosing); MainForm.Enable(filters, choosing);
             selection.Text = Kind == "cargo" ? picks.Count == 0 ? "请先选择要添加的货物" : string.Join("、", picks.Take(3).Select(form.DisplayName)) + (picks.Count > 3 ? "等 " + picks.Count + " 种" : "") : selected == null ? "" : Data.Str(selected, "gameName").Length > 0 ? "显示游戏中的名称" : "尚未读取到游戏名称";
             MainForm.Enable(refresh, online); MainForm.Enable(favorite, selected != null);
             favorite.Text = selected != null && form.Prefs.Set(Kind, false).Contains(Data.Str(selected, "id")) ? "取消收藏" : "收藏当前条目";
@@ -368,17 +399,17 @@ namespace TransportFever3Trainer
             var chosenTarget = targets == null ? null : targets.SelectedItem as CargoTarget;
             if (chosenTarget != null) chosenTarget = targetChoices.FirstOrDefault(t => t.Id == chosenTarget.Id);
             bool fits = chosenTarget != null && targetChoices.Any(t => t.Id == chosenTarget.Id && t.Fits);
-            MainForm.Enable(act, online && form.IsAvailable(op) && (Kind == "world" ? selected != null : picks.Count > 0 && fits && cargoRequest == null));
+            MainForm.Enable(act, online && form.IsAvailable(op) && (Kind == "world" ? selected != null : picks.Count > 0 && fits && choosing));
             actionSummary.Text = !form.CaptureReady ? "请先连接游戏并进入地图。" : Kind == "cargo" ? chosenTarget == null ? "请选择货物与目标库存。" : chosenTarget.Name + " · 预计添加 " + chosenTarget.Allocation.Total + " 件" : selected == null ? "选择城镇或产业后，可应用右侧参数。" : "当前目标：" + form.DisplayName(selected);
             if (Kind == "cargo")
             {
-                MainForm.Enable(clearPicked, checkedCargo.Count > 0 && cargoRequest == null);
-                MainForm.Enable(targets, targetChoices.Count > 0 && cargoRequest == null);
-                MainForm.Enable(Numbers["count"], cargoRequest == null);
-                MainForm.Enable(useRecommended, recommended != null && cargoRequest == null && (chosenTarget == null || chosenTarget.Id != recommended.Id));
+                MainForm.Enable(clearPicked, checkedCargo.Count > 0 && choosing);
+                MainForm.Enable(targets, targetChoices.Count > 0 && choosing);
+                MainForm.Enable(Numbers["count"], choosing);
+                MainForm.Enable(useRecommended, online && choosing && picks.Count > 0 && picks.Count <= 64);
                 MainForm.Enable(locateTarget, online && chosenTarget != null && form.IsAvailable("focus"));
-                useRecommended.Text = recommended != null && chosenTarget != null && chosenTarget.Id == recommended.Id ? "已选择推荐" : "使用推荐";
-                recommendationText.Text = recommended != null ? "推荐：" + recommended.Name + "\r\n" + recommended.Kind + " · 距镜头中心 " + CargoTargets.DistanceText(recommended.Distance.Value) : picks.Count == 0 ? "选择货物后推荐附近的兼容库存。" : picks.Count > 64 ? "一次最多选择 64 种货物，请减少勾选。" : !targetChoices.Any(t => t.Fits) ? "暂无有空位的兼容库存。" : "位置或镜头数据不可用，请手动选择库存。";
+                useRecommended.Text = recommending ? "正在读取当前镜头…" : "读取镜头并推荐";
+                recommendationText.Text = recommending ? "正在读取游戏当前镜头并刷新库存位置…" : recommended != null ? "推荐：" + recommended.Name + "\r\n" + recommended.Kind + " · 距镜头中心 " + CargoTargets.DistanceText(recommended.Distance.Value) : RecommendationProblem(picks.Count);
                 targetSummary.Text = chosenTarget == null ? "请选择兼容的仓库或生产建筑。" : "目标：" + chosenTarget.Name + (fits ? "\r\n预计添加 " + chosenTarget.Allocation.Total + " 件" + (chosenTarget.Clipped ? "，已按剩余空间调整。" : "。") : "\r\n库存已满，无需添加。");
                 act.Text = cargoRequest != null ? "等待游戏执行…" : "添加所选货物";
                 if (cargoRequest != null) actionSummary.Text = "已提交货物，正在等待游戏执行，请勿重复添加。";
@@ -395,6 +426,7 @@ namespace TransportFever3Trainer
                 nameHint.Text = Data.Str(selected, "gameName").Length > 0 ? "名称读取自游戏。保存到游戏后，请在游戏中保存存档。" : "游戏名称优先。显示名称只用于本工具的当前地图会话，不修改游戏。";
             }
             footnote.Text = online && !form.IsAvailable(op) ? form.UnavailableReason(op) : Kind == "cargo" ? "空间不足时自动按剩余容量添加；实际数量以游戏执行结果为准。乘客由人口模拟生成。" : "";
+            Arrange();
         }
         static bool ValidName(string value) { return !string.IsNullOrWhiteSpace(value) && Encoding.UTF8.GetByteCount(value.Trim()) <= 256 && !value.Any(char.IsControl); }
         void SaveGameName()

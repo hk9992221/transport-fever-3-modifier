@@ -43,12 +43,16 @@ namespace TransportFever3Trainer
         string page = "features", group = "全部", lastSnapshot = "";
         int P(int n) { return Ui.Px(this, n); }
         protected override Size MinimumLogicalSize { get { return new Size(620, 440); } }
+        protected override Size FixedClientLayout { get { return new Size(1280, 800); } }
         public static Label LabelFor(string text, float size = 10, bool bold = false)
         { return new Label { Text = text, ForeColor = Theme.Ink, Font = Theme.F(size, bold), BackColor = Color.Transparent, AutoSize = false, AutoEllipsis = true, UseMnemonic = false }; }
         public static void Enable(Control control, bool value) { if (control.Enabled != value) control.Enabled = value; }
 
         public MainForm(bool forCapture = false, bool offlineCheck = false)
         {
+            // All bounds already use monitor-DPI pixels. Do not scale the same
+            // dynamically created controls a second time through Form autoscaling.
+            AutoScaleMode = AutoScaleMode.None; FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false;
             offline = offlineCheck; Text = "狂热运输3修改器 · v" + Protocol.Version; ClientSize = new Size(1220, 780);
             heading = LabelFor("常用功能", 20, true); heading.Name = "page-heading";
             pageHint = LabelFor("", 9); pageHint.ForeColor = Theme.Muted; pageHint.Name = "page-help";
@@ -135,7 +139,7 @@ namespace TransportFever3Trainer
 
                 int contentLeft = sidebar.Right + gap, w = Math.Max(1, ClientSize.Width - contentLeft - pad); bool wide = w >= P(900);
                 bool compactHeader = ClientSize.Height < P(560);
-                header.SetBounds(contentLeft, pad, w, P(compactHeader ? 96 : wide ? 112 : 136));
+                header.SetBounds(contentLeft, pad, w, P(compactHeader ? 96 : wide ? 112 : 160));
                 online.Visible = stats.Visible = !compactHeader;
                 appCaption.Text = compactHeader ? CaptureReady ? "已连接" : "未连接" : "修改器";
                 appCaption.ForeColor = compactHeader && CaptureReady ? Theme.Green : Theme.Muted;
@@ -143,7 +147,7 @@ namespace TransportFever3Trainer
                 pageHint.SetBounds(P(20), P(52), Math.Max(1, wide ? w / 2 - P(30) : w - P(40)), P(compactHeader ? 34 : wide ? 38 : 22));
                 online.SetBounds(P(20), P(wide ? 90 : 76), Math.Max(1, wide ? w / 2 - P(30) : w - P(40)), P(22));
                 if (wide) stats.SetBounds(w / 2 + P(16), P(20), w / 2 - P(36), P(72));
-                else stats.SetBounds(P(20), P(104), Math.Max(1, w - P(40)), P(28));
+                else stats.SetBounds(P(20), P(104), Math.Max(1, w - P(40)), P(48));
                 int pageTop = header.Bottom + P(12), footer = P(28);
                 pages.SetBounds(contentLeft, pageTop, w, Math.Max(1, ClientSize.Height - pageTop - pad - footer));
                 status.SetBounds(contentLeft + P(2), ClientSize.Height - pad - footer + P(4), Math.Max(1, w - P(4)), footer);
@@ -238,10 +242,29 @@ namespace TransportFever3Trainer
             else
             {
                 var data = Data.Obj(Data.Json.DeserializeObject(Data.Json.Serialize(command))); string op = Data.Str(data, "op"), id = op == "set" ? Data.Str(data, "id") : op;
-                if (op != "reset" && op != "refresh" && !(op == "set" && !Data.Bool(data, "enabled")) && !IsAvailable(id)) error = UnavailableReason(id);
+                if (op != "reset" && op != "refresh" && op != "camera_read" && !(op == "set" && !Data.Bool(data, "enabled")) && !IsAvailable(id)) error = UnavailableReason(id);
             }
             if (error != null) { Notify(error, true); if (completed != null) completed(false, error); return; }
             requests.Enqueue(new RequestItem { Command = command, Scope = NameScope, Completed = completed }); SendNext();
+        }
+        public void ReadCamera(bool refreshStocks, Action<bool, string> completed)
+        {
+            string scope = NameScope, map = Data.Str(State, "nameScope"), world = Data.Str(State, "world"), request = Guid.NewGuid().ToString("N");
+            Request(new { op = "camera_read", world = Data.Get(State, "world"), request = request, refreshStocks = refreshStocks },
+                delegate(bool success, string message) {
+                    if (scope != NameScope) { if (completed != null) completed(false, "地图或连接已切换，请重新读取镜头。"); return; }
+                    if (success) try
+                    {
+                        var reply = CameraData.ReadReply(Data.Json.DeserializeObject(bridge.Response), request, world, map, refreshStocks);
+                        State["camera"] = Data.Get(reply, "camera"); State["cameraError"] = ""; State["cameraAt"] = Data.Get(reply, "cameraAt");
+                        if (refreshStocks) State["stocks"] = Data.Get(reply, "stocks");
+                    }
+                    catch (Exception e) { success = false; message = e.Message; }
+                    if (!success) { State["camera"] = new Dictionary<string, object>(); State["cameraAt"] = null; State["cameraError"] = message; Notify(message, true); }
+                    // The command reply is current even when the periodic shared
+                    // snapshot has not ticked yet. Apply it before calculating.
+                    UpdateState(); if (completed != null) completed(success, message);
+                });
         }
         void CancelQueued(string message)
         { while (requests.Count > 0) { var entry = requests.Dequeue(); if (entry.Completed != null) entry.Completed(false, message); } }
@@ -315,6 +338,8 @@ namespace TransportFever3Trainer
                 string text = "狂热运输3修改器 · v" + Protocol.Version + "\r\n\r\n" + (bridge == null ? "尚未连接" : bridge.IdentityText) + "\r\n\r\n" +
                     "可用功能：" + cards.Keys.Count(id => Data.Bool(Data.Get(caps, id), "supported")) + " / " + cards.Count +
                     "\r\n货物：" + Data.Rows(Data.Get(State, "catalog")).Count + "\r\n城镇 / 产业：" + Data.Rows(Data.Get(State, "worlds")).Count +
+                    "\r\n镜头中心：" + (CameraData.HasCenter(Data.Get(State, "camera")) ? Data.Num(Data.Get(State, "camera"), "x").ToString("N1") + ", " + Data.Num(Data.Get(State, "camera"), "y").ToString("N1") : "未读取") +
+                    "\r\n镜头读取错误：" + Data.Str(State, "cameraError", "无") + "\r\n有坐标的库存：" + Data.Rows(Data.Get(State, "stocks")).Count(r => CameraData.HasCenter(Data.Get(r, "position"))) +
                     "\r\n命令计数：" + Data.Num(d, "commands") + "\r\n待恢复参数：" + Data.Num(d, "backups") +
                     "\r\n\r\n状态：" + Data.Str(State, "message") + "\r\n错误：" + Data.Str(State, "error", "无") +
                     "\r\n\r\n游戏名称优先；读不到时可设置本工具当前地图会话的显示名称。" +
@@ -384,6 +409,23 @@ namespace TransportFever3Trainer
                 bool accessBlocked = false; try { BuildMode.RequireLiveAccess(); } catch (InvalidOperationException) { accessBlocked = true; }
                 if (!accessBlocked) throw new InvalidOperationException("离线检查没有阻止游戏连接。");
                 report.Add(new { buildGuard = "live game access blocked", pass = true });
+                if (AutoScaleMode != AutoScaleMode.None || FormBorderStyle != FormBorderStyle.FixedSingle || MaximizeBox)
+                    throw new Exception("主窗口未使用固定比例和手动 DPI 布局");
+                foreach (var maximum in new[] { new Size(1280, 720), new Size(1920, 1080), new Size(2560, 1440), new Size(800, 600) })
+                {
+                    var fit = Ui.FitFixedClient(new Size(2560, 1600), maximum);
+                    if (fit.Width > maximum.Width || fit.Height > maximum.Height || fit.Width * 10 != fit.Height * 16)
+                        throw new Exception("固定比例窗口超出屏幕或比例错误");
+                }
+                report.Add(new { window = "16:10, fixed border, single DPI scaling", pass = true });
+                var cameraReply = Data.Json.DeserializeObject("{\"ok\":true,\"request\":\"camera-test\",\"world\":1,\"nameScope\":\"layout\",\"camera\":{\"x\":12,\"y\":34},\"stocks\":[]}");
+                var freshCamera = CameraData.ReadReply(cameraReply, "camera-test", "1", "layout", true);
+                if (!CameraData.HasCenter(Data.Get(freshCamera, "camera")) || CameraData.HasPose(Data.Get(freshCamera, "camera"))) throw new Exception("镜头中心和完整参数未分别验证");
+                bool staleBlocked = false; try { CameraData.ReadReply(cameraReply, "old-request", "1", "layout", true); } catch (InvalidDataException) { staleBlocked = true; }
+                if (!staleBlocked) throw new Exception("过期镜头回复未被拒绝");
+                staleBlocked = false; try { CameraData.ReadReply(cameraReply, "camera-test", "2", "layout", true); } catch (InvalidDataException) { staleBlocked = true; }
+                if (!staleBlocked) throw new Exception("其他地图的镜头回复未被拒绝");
+                report.Add(new { cameraRead = "correlated response, current map, center versus pose", pass = true });
                 var preview = new { playing = true, world = 1, nameScope = "layout", camera = new { x = 0, y = 0, z = 500, w = 0, v = 1 }, catalog = new[] { new { id = "1", name = "原油", category = "货物", description = "货物示例" }, new { id = "2", name = "木材", category = "货物", description = "货物示例" } },
                     worlds = new object[] { new { id = "20", name = "北港采油平台", gameName = "北港采油平台", category = "产业", productivity = 1, description = "产业名称读取示例" },
                         new { id = "21", name = "新港", gameName = "新港", category = "城镇", res = 500, commercial = 200, industry = 200, description = "城镇示例" },
@@ -464,6 +506,12 @@ namespace TransportFever3Trainer
                 if (!child.Visible) continue;
                 if (child.Name.Length > 0 && !canScroll && (child.Left < -2 || child.Top < -2 || child.Right > parent.ClientSize.Width + 2 || child.Bottom > parent.ClientSize.Height + 2))
                     issues.Add(child.Name + " exceeds " + parent.GetType().Name);
+                if (child is PillButton && child.Name.Length > 0)
+                {
+                    var text = TextRenderer.MeasureText(child.Text, child.Font, Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
+                    if (text.Width > child.ClientSize.Width - Ui.Px(child, 14) || text.Height > child.ClientSize.Height)
+                        issues.Add(child.Name + " button text is clipped");
+                }
                 Audit(child, issues);
             }
             if (parent is FeatureCard)

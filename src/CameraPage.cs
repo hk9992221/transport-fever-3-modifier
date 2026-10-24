@@ -17,7 +17,7 @@ namespace TransportFever3Trainer
         readonly TextBox bookmarkName;
         readonly ThemedComboBox bookmarks;
         readonly PillButton read, apply, back, save, jump, remove;
-        bool loaded, arranging;
+        bool loaded, arranging, reading;
         string lastWorld = "";
         int P(int value) { return Ui.Px(this, value); }
 
@@ -36,17 +36,17 @@ namespace TransportFever3Trainer
                     DecimalPlaces = 3, Increment = 1, Font = Theme.F(11), TextAlign = HorizontalAlignment.Center, Name = "camera-" + keys[i] };
                 numbers[keys[i]] = number; cameraCard.Controls.Add(number);
             }
-            read = Button(cameraCard, "读取当前镜头", delegate { LoadValues(); });
+            read = Button(cameraCard, "读取当前镜头", delegate { ReadCurrent(null); });
             apply = Button(cameraCard, "应用镜头位置", delegate { MoveCamera(numbers.ToDictionary(x => x.Key, x => (object)x.Value.Value)); });
             back = Button(cameraCard, "返回上一镜头", delegate { form.Request(new { op = "return" }); });
             cameraNote = MainForm.LabelFor("可通过世界管理的“镜头定位”快速找到城镇与产业。", 10); cameraNote.ForeColor = Theme.Muted; cameraCard.Controls.Add(cameraNote);
             bookmarkName = new TextBox { Font = Theme.F(11), BackColor = Theme.Input, ForeColor = Theme.Ink, Text = "我的位置", MaxLength = 80,
                 AccessibleName = "镜头书签名称", Name = "bookmark-name" }; bookmarkCard.Controls.Add(bookmarkName);
-            save = Button(bookmarkCard, "保存当前镜头", delegate {
+            save = Button(bookmarkCard, "保存当前镜头", delegate { ReadCurrent(delegate {
                 var current = Data.Obj(Data.Get(form.State, "camera")); if (current.Count == 0) return;
                 var mark = new Dictionary<string, object>(current); mark["name"] = bookmarkName.Text.Trim().Length > 0 ? bookmarkName.Text.Trim() : "我的位置";
                 form.Prefs.bookmarks.Add(mark); form.SavePrefs(); Fill();
-            });
+            }); });
             bookmarks = new ThemedComboBox { Font = Theme.F(11), AccessibleName = "已保存的镜头书签", Name = "bookmark-list" };
             bookmarkCard.Controls.Add(bookmarks);
             jump = Button(bookmarkCard, "前往所选书签", delegate { if (bookmarks.SelectedIndex >= 0) MoveCamera(form.Prefs.bookmarks[bookmarks.SelectedIndex]); });
@@ -98,6 +98,16 @@ namespace TransportFever3Trainer
         }
         void MoveCamera(Dictionary<string, object> values)
         { form.Request(new { op = "camera", x = Data.Num(values, "x"), y = Data.Num(values, "y"), z = Data.Num(values, "z", 500), w = Data.Num(values, "w"), v = Data.Num(values, "v", 1) }); }
+        void ReadCurrent(Action after)
+        {
+            if (reading) return; string scope = form.NameScope; reading = true; UpdateState();
+            form.ReadCamera(false, delegate(bool success, string message) {
+                if (scope != form.NameScope) return; reading = false;
+                if (success && CameraData.HasPose(Data.Get(form.State, "camera"))) { LoadValues(); if (after != null) after(); }
+                else form.Notify(success ? "已读到镜头中心，但完整镜头参数不可用。" : "读取当前镜头失败：" + message, true);
+                UpdateState();
+            });
+        }
         void Fill()
         {
             bookmarks.Items.Clear(); foreach (var mark in form.Prefs.bookmarks) bookmarks.Items.Add(Data.Str(mark, "name", "我的位置"));
@@ -105,18 +115,21 @@ namespace TransportFever3Trainer
         }
         void LoadValues()
         {
-            var current = Data.Obj(Data.Get(form.State, "camera")); if (current.Count == 0) return;
+            var current = Data.Obj(Data.Get(form.State, "camera")); if (!CameraData.HasPose(current)) return;
             foreach (var pair in numbers) pair.Value.Value = Math.Max(pair.Value.Minimum, Math.Min(pair.Value.Maximum, (decimal)Data.Num(current, pair.Key)));
             loaded = true;
         }
         public void UpdateState()
         {
             bool online = form.CaptureReady && !form.Busy;
-            string world = form.NameScope; if (world != lastWorld) { loaded = false; lastWorld = world; }
-            MainForm.Enable(read, online && form.IsAvailable("camera")); MainForm.Enable(apply, online && form.IsAvailable("camera"));
-            MainForm.Enable(save, online && form.IsAvailable("camera")); MainForm.Enable(back, online && form.IsAvailable("return"));
+            string world = form.NameScope; if (world != lastWorld) { loaded = reading = false; lastWorld = world; }
+            bool pose = CameraData.HasPose(Data.Get(form.State, "camera"));
+            MainForm.Enable(read, online && !reading); MainForm.Enable(apply, online && loaded && pose && form.IsAvailable("camera"));
+            MainForm.Enable(save, online && !reading); MainForm.Enable(back, online && form.IsAvailable("return"));
             MainForm.Enable(jump, online && bookmarks.Items.Count > 0 && form.IsAvailable("camera")); MainForm.Enable(remove, bookmarks.Items.Count > 0);
             if (!loaded && form.CaptureReady) LoadValues();
+            read.Text = reading ? "正在读取当前镜头…" : "读取当前镜头";
+            cameraNote.Text = reading ? "正在请求游戏当前镜头数据…" : !form.CaptureReady ? "连接游戏后可读取当前镜头。" : !pose ? CameraData.HasCenter(Data.Get(form.State, "camera")) ? "已读取镜头中心；完整参数暂不可用。" : "点击“读取当前镜头”重试。" + Data.Str(form.State, "cameraError") : "镜头读取与修改分别验证；读取按钮会主动请求游戏。";
         }
     }
 }

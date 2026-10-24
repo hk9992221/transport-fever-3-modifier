@@ -97,7 +97,7 @@ namespace TransportFever3Trainer
             { e.Graphics.FillPath(brush, path); e.Graphics.DrawPath(border, path); }
             TextRenderer.DrawText(e.Graphics, Text, Font, Rectangle.Inflate(ClientRectangle, -Ui.Px(this, 7), 0),
                 !Enabled ? Theme.Muted : Primary ? Color.White : ForeColor,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
             if (Enabled && ((Focused && ShowFocusCues) || isDefault) && Width > 10 && Height > 10)
                 ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle, -4, -4));
         }

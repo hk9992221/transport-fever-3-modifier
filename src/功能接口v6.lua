@@ -1,5 +1,5 @@
-local S=(type(__SZTF3F6)=='table' and __SZTF3F6.protocol==6 and __SZTF3F6) or {protocol=6,version='1.1.3',settings={},backups={},jobs={},lastMessage='已连接游戏内存',lastError='',catalog={},stocks={},worlds={},tasks={},nextScan=0,commandCount=0}
-S.version='1.1.3';S.protocol=6
+local S=(type(__SZTF3F6)=='table' and __SZTF3F6.protocol==6 and __SZTF3F6) or {protocol=6,version='1.1.4',settings={},backups={},jobs={},lastMessage='已连接游戏内存',lastError='',catalog={},stocks={},worlds={},tasks={},nextScan=0,commandCount=0}
+S.version='1.1.4';S.protocol=6
 local CT=api and api.type and api.type.ComponentType or {}
 local isCallable
 local function arr(t) return setmetatable(t or {},{jsonArray=true}) end
@@ -73,6 +73,15 @@ local function funcs(list) for _,p in ipairs(list) do need(isCallable(path(p)),'
 local function fields(c,list,label)
  need(c~=nil,'未找到组件 '..label);for _,p in ipairs(list) do local v=c;for part in p:gmatch('[^.]+') do local ok,x=pcall(function()return v[part] end);need(ok,'字段不可读 '..label..'.'..p);v=x end;need(finite(v),'字段类型未通过 '..label..'.'..p) end
 end
+local function cameraData()
+ funcs({'api.gui.camera.getCameraData'});local v=api.gui.camera.getCameraData();fields(v,{'x','y'},'镜头中心')
+ local data={x=v.x,y=v.y};for source,target in pairs({z='z',w='w',q='v'}) do local ok,n=pcall(function()return v[source] end);if ok and finite(n) then data[target]=n end end;return data
+end
+local function readCamera()
+ local ok,value=pcall(cameraData)
+ S.camera=ok and value or {};S.cameraError=ok and '' or tostring(value):gsub('^.-:%d+: ','');S.cameraAt=ok and now() or nil
+ return S.camera
+end
 local function cmd(p) funcs({'api.cmd.sendCommand','api.cmd.'..p}) end
 local function cap(id,test)
  local ok,why=pcall(test);S.capabilities[id]={supported=ok,reason=ok and '' or tostring(why):gsub('^.-:%d+: ','')}
@@ -111,7 +120,8 @@ local function refreshCapabilities()
  cap('add',function()cmd('debug.makeStockSetCargoAmountCmd');funcs({'api.res.cargoTypeRep.getAll','api.res.cargoTypeRep.get','api.res.cargoTypeRep.getName','api.engine.util.stock.getStockCargoTypes','api.engine.system.simEntityAtStockSystem.getStockCount','api.engine.system.simEntityAtStockSystem.getStockCountForCargoType'});need(CT.STOCK_LIST~=nil,'缺少库存组件 STOCK_LIST') end)
  cap('town_capacity',function()cmd('makeTownSetInitialLandUseCapacitiesCmd');local n=0;for _,e in pairs(entities(CT.TOWN)) do local c=component(e,CT.TOWN);need(c and c.initialLandUseCapacities and finite(c.initialLandUseCapacities[1]) and finite(c.initialLandUseCapacities[2]) and finite(c.initialLandUseCapacities[3]),'城镇土地容量类型未通过');n=n+1 end;need(n>0,'当前地图没有可验证的城镇') end)
  S.capabilities.industry_value=S.capabilities.productivity
- cap('camera',function()funcs({'api.gui.camera.getCameraData','api.gui.camera.setCameraData','api.type.Vec5f.new'});fields(api.gui.camera.getCameraData(),{'x','y','z','w','q'},'镜头') end)
+ cap('camera_read',function()cameraData() end)
+ cap('camera',function()funcs({'api.gui.camera.setCameraData','api.type.Vec5f.new'});fields(cameraData(),{'x','y','z','w','v'},'完整镜头') end)
  cap('focus',function()funcs({'api.gui.camera.focusEntity'});need(S.capabilities.camera.supported,S.capabilities.camera.reason) end)
  S.capabilities['return']=S.capabilities.camera
  cap('rename_entity',function()cmd('makeEntitySetNameCmd');need(CT.NAME~=nil,'当前游戏未提供名称组件 NAME') end)
@@ -179,12 +189,12 @@ local function stockOptions()
  if sl and not seen[sid] then seen[sid]=true;local slots=arr()
  for k,st in pairs(sl.stocks) do local i=tonumber(k)-1;local types=api.engine.util.stock.getStockCargoTypes(sid,i);local allowed=arr();for _,v in pairs(types) do allowed[#allowed+1]=v end
  slots[#slots+1]={index=i,cargo=st.cargoType,mixed=st.mixedTypes==true,allowed=allowed,capacity=st.capacity,count=api.engine.system.simEntityAtStockSystem.getStockCount(sid,i),kind=tostring(st.type)} end
- local position;local getTransl=api.type.Mat4f and api.type.Mat4f.getTransl
+ local position;local positionError='建筑位置读取接口 api.type.Mat4f.getTransl 尚未通过验证';local getTransl=api.type.Mat4f and api.type.Mat4f.getTransl
  if isCallable(getTransl) then
-  local ok,p=pcall(function()local con=component(c.construction,CT.CONSTRUCTION);return con and getTransl(con.transf) end)
-  if ok and p and finite(p.x) and finite(p.y) then position={x=p.x,y=p.y} end
+  local ok,p=pcall(function()local con=component(c.construction,CT.CONSTRUCTION);assert(con,'建筑没有可读取的建设组件');local value=getTransl(con.transf);fields(value,{'x','y'},'建筑位置');return {x=value.x,y=value.y} end)
+  if ok then position=p;positionError='' else positionError=tostring(p):gsub('^.-:%d+: ','') end
  end
- r[#r+1]={id=tostring(sid),nameEntity=tostring(e),gameName=gameName(e) or '',name=name(e,ct==CT.WAREHOUSE and '仓库' or ct==CT.TOWN and '城镇库存' or '产业库存'),category=ct==CT.WAREHOUSE and '仓库' or ct==CT.TOWN and '城镇库存' or '产业',position=position,slots=slots}
+ r[#r+1]={id=tostring(sid),nameEntity=tostring(e),gameName=gameName(e) or '',name=name(e,ct==CT.WAREHOUSE and '仓库' or ct==CT.TOWN and '城镇库存' or '产业库存'),category=ct==CT.WAREHOUSE and '仓库' or ct==CT.TOWN and '城镇库存' or '产业',position=position,positionError=positionError,slots=slots}
  end end end;return r
 end
 local function scan()
@@ -268,7 +278,6 @@ local function addCargo(c)
  end
  for i=1,#commands do local entry=commands[i];local reported=false;local function finish(success)if reported then return end;reported=true;done(success,entry)end;local ok=pcall(send,entry.command,finish);if not ok then finish(false) end end
 end
-local function cameraData() local getter=api and api.gui and api.gui.camera and api.gui.camera.getCameraData;assert(isCallable(getter),'镜头读取接口不可用');local v=getter();return {x=v.x,y=v.y,z=v.z,w=v.w,v=v.q} end
 local function dateValue(n)
  n=math.floor(n);local y=math.floor(n/10000);local m=math.floor(n/100)%100;local d=n%100;assert(y>=1850 and y<=2500 and m>=1 and m<=12,'日期必须在 1850–2500 年之间');local days={31,((y%4==0 and y%100~=0)or y%400==0)and 29 or 28,31,30,31,30,31,31,30,31,30,31};assert(d>=1 and d<=days[m],'日期不存在');return api.type.Date.new(y,m,d)
 end
@@ -312,9 +321,16 @@ local function renameEntity(c)
 end
 function S.dispatch(c)
  assert(type(c)=='table','请求格式错误');if c.op=='read' then return S.tick(true) end;assert(S.player and component(S.player,CT.ACCOUNT),'请进入可运行地图')
- refreshCapabilities();if c.op~='reset' and c.op~='refresh' and not (c.op=='set' and not c.enabled) then requireCap(c.op=='set' and c.id or c.op) end
+ refreshCapabilities();if c.op~='reset' and c.op~='refresh' and c.op~='camera_read' and not (c.op=='set' and not c.enabled) then requireCap(c.op=='set' and c.id or c.op) end
  S.lastError='';S.lastMessage='命令已提交'
- if c.op=='read' then return S.tick(true) elseif c.op=='reset' then restoreAll();S.lastMessage='已关闭持续功能并提交恢复命令'
+ if c.op=='camera_read' then
+ assert(tonumber(c.world)==S.world and api.engine.util.getWorld()==S.world and api.engine.util.getPlayer()==S.player,'地图或连接已切换，请重新读取镜头')
+ assert(type(c.request)=='string' and #c.request>0 and #c.request<=80,'镜头请求标识无效')
+ local cam=readCamera();assert(finite(cam.x) and finite(cam.y),S.cameraError)
+ if c.refreshStocks then S.stocks=stockOptions() end
+ S.lastMessage=c.refreshStocks and '已读取当前镜头并刷新库存位置' or '已读取当前镜头'
+ return json({ok=true,request=c.request,world=S.world,nameScope=S.nameScope,camera=cam,cameraAt=S.cameraAt,stocks=c.refreshStocks and S.stocks or nil,message=S.lastMessage})
+ elseif c.op=='read' then return S.tick(true) elseif c.op=='reset' then restoreAll();S.lastMessage='已关闭持续功能并提交恢复命令'
  elseif c.op=='set' then
  need(continuous[c.id],'未知持续功能');local value=tonumber(c.value) or 1;assert(value==value and value>=.05 and value<=100,'倍率应在 0.05–100 之间');if c.id=='simulation_speed' then need(value==math.floor(value),'模拟速度倍率必须为整数') end;S.settings[c.id]=c.enabled and value or nil
  if c.id=='funds' then local a=component(S.player,CT.ACCOUNT);S.fundsFloor=c.enabled and a.balance or nil
@@ -374,8 +390,8 @@ function S.tick(active)
  end
  if t>=S.nextScan then local success,err=pcall(scan);if not success then S.lastError=tostring(err);S.nextScan=t+3 end end
  local date={year=0,month=0,day=0};local dateOK,dateRead=pcall(function()return api.engine.util.getCalendarDate(gt.gameTime) end);if dateOK and dateRead then date=dateRead end;local rank={level=0,potentialLevel=0,experience=0};local rankOK,rankRead=pcall(company);if rankOK and rankRead then rank=rankRead end
- local cam={};local cameraOK,cameraRead=pcall(cameraData);if cameraOK and finite(cameraRead.x) and finite(cameraRead.y) then cam=cameraRead end;local world=component(w,CT.WORLD)
- return json({playing=true,player=player,world=w,nameScope=S.nameScope,balance=a.balance,loan=a.loan,rank=rank.level,potentialRank=rank.potentialLevel,experience=rank.experience,date=string.format('%04d-%02d-%02d',date.year,date.month,date.day),dateNumber=date.year*10000+date.month*100+date.day,dayLength=gs.millisPerDay,speed=gs.speedup,daytime=gt.timeOfDaySec/3600,clouds=world and world.cloudCoverage or nil,settings=S.settings,capabilities=S.capabilities,catalog=S.catalog,stocks=S.stocks,worlds=S.worlds,tasks=S.tasks,camera=cam,renameResult=S.renameResult,cargoResult=S.cargoResult,message=S.lastMessage,error=S.lastError,diagnostics={version=S.version,protocol=S.protocol,commands=S.commandCount,backups=(function()local n=0;for k in pairs(S.backups)do n=n+1 end;return n end)()}})
+ local cam=readCamera();local world=component(w,CT.WORLD)
+ return json({playing=true,player=player,world=w,nameScope=S.nameScope,balance=a.balance,loan=a.loan,rank=rank.level,potentialRank=rank.potentialLevel,experience=rank.experience,date=string.format('%04d-%02d-%02d',date.year,date.month,date.day),dateNumber=date.year*10000+date.month*100+date.day,dayLength=gs.millisPerDay,speed=gs.speedup,daytime=gt.timeOfDaySec/3600,clouds=world and world.cloudCoverage or nil,settings=S.settings,capabilities=S.capabilities,catalog=S.catalog,stocks=S.stocks,worlds=S.worlds,tasks=S.tasks,camera=cam,cameraError=S.cameraError,cameraAt=S.cameraAt,renameResult=S.renameResult,cargoResult=S.cargoResult,message=S.lastMessage,error=S.lastError,diagnostics={version=S.version,protocol=S.protocol,commands=S.commandCount,backups=(function()local n=0;for k in pairs(S.backups)do n=n+1 end;return n end)()}})
 end
 rawset(_G,'__SZTF3F6',S)
 return '{}'
