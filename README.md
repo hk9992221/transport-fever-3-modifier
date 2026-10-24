@@ -2,17 +2,21 @@
 
 《狂热运输3》Windows x64 修改器，当前版本 **v1.0.5**，通信协议 **v6**。桌面界面使用 C# / Windows Forms，游戏内运行模块使用 C 和 MinHook，功能由 Lua 脚本实现。
 
-## 下载 Windows 便携包
+## 从 Releases 下载 Windows 便携包
 
-本仓库只在**手动操作**时构建。上传代码、创建分支、提交 PR 或标签都不会触发打包。
+打开仓库的 [Releases](https://github.com/hk9992221/transport-fever-3-modifier/releases)，在对应版本的 Assets 中下载 `TransportFever3Modifier-v1.0.5-windows-x64.zip`，可同时下载 `.sha256` 校验文件。完整解压 ZIP，保留程序与“运行模块”的相对位置；首次运行会在本机创建“配置”目录。
+
+## 手动构建并发布 Release
+
+本仓库只在**手动操作**时构建和发布。上传代码、创建分支、提交 PR 或标签都不会触发工作流。
 
 1. 打开仓库的 **Actions** 页面。
-2. 选择 **Windows x64 手动打包**。
-3. 点击 **Run workflow**，选择分支并再次点击 **Run workflow**。
-4. 构建成功后，在该次运行的 **Artifacts** 中下载 `TransportFever3Modifier-Windows-x64`。
-5. 解开下载文件，再解开其中的便携 ZIP；完整保留程序与“运行模块”的相对位置。
+2. 选择 **Windows x64 手动发布**。
+3. 点击 **Run workflow**，保持 `main` 分支并再次点击 **Run workflow**。
+4. 构建成功后，工作流会按源码版本号自动创建标签及 Release，例如 `v1.0.5`，并上传便携 ZIP 和 `.sha256` 校验文件。
+5. 在构建摘要中打开 Release 链接，或直接进入仓库的 **Releases** 下载。
 
-产物包括便携 ZIP 和 `.sha256` 校验文件，保留 **7 天**。不会自动创建 GitHub Release，也不会在仓库中提交 EXE、DLL 或个人设置。首次运行会在本机创建“配置”目录。
+发布文件保存在 Releases 中，不使用临时 Actions Artifacts 保存安装包。工作流使用仓库自动提供的 `GITHUB_TOKEN`，无需额外配置个人访问令牌。发布前先创建草稿并上传附件，完成后正式发布；同一提交重复运行可补传或更新附件。版本标签已绑定其他提交时会停止发布，需先升级版本；不会移动已有版本标签。
 
 工作流使用 `windows-2022`、系统 .NET Framework C# 编译器和固定版本 Zig 0.14.1；下载 Zig 时核对 SHA-256。构建仅检查编译、文件版本、x64 架构、脚本一致性和压缩包完整性，不会运行游戏或自动修改存档。
 
@@ -44,7 +48,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 
 - `src/`：C#、C、Lua、资源、MinHook 源码和底层构建脚本。
 - `scripts/build-windows.ps1`：统一构建、校验及便携打包入口。
-- `.github/workflows/windows-package.yml`：仅由 `workflow_dispatch` 触发的 Windows 工作流。
+- `.github/workflows/windows-package.yml`：仅由 `workflow_dispatch` 触发的 Windows 构建及 Release 发布工作流。
 - `docs/`：使用说明及第三方说明。
 
 从交付包导入时保留编译必需文件；未导入 AKE 会话记录、日志、个人配置、旧产物发布清单及绑定旧哈希的发布计划。便携包根据每次实际构建重新生成“发布清单.json”。
