@@ -1,7 +1,8 @@
 ﻿[CmdletBinding()]
 param(
     [string]$Compiler = '',
-    [string]$OutputDirectory = ''
+    [string]$OutputDirectory = '',
+    [switch]$SkipZip
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,7 +27,11 @@ $runtimeName = "TransportFever3Runtime_v$protocol.dll"
 $luaName = "功能接口v$protocol.lua"
 $packageName = "TransportFever3Modifier-v$version-windows-x64"
 $zipPath = Join-Path $OutputDirectory ($packageName + '.zip')
-if ((Test-Path -LiteralPath $zipPath) -or (Test-Path -LiteralPath ($zipPath + '.sha256'))) {
+$folderPath = Join-Path $OutputDirectory $packageName
+if ($SkipZip -and (Test-Path -LiteralPath $folderPath)) {
+    throw '同名文件夹已存在；请指定新的 -OutputDirectory。'
+}
+if (-not $SkipZip -and ((Test-Path -LiteralPath $zipPath) -or (Test-Path -LiteralPath ($zipPath + '.sha256')))) {
     throw '同名 ZIP 或校验文件已存在；请移走旧产物或指定新的 -OutputDirectory。'
 }
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
@@ -34,6 +39,8 @@ $stage = Join-Path $OutputDirectory ('stage-' + [Guid]::NewGuid().ToString('N'))
 $buildRoot = Join-Path $stage 'compiled'
 $packageRoot = Join-Path $stage $packageName
 $stagedZipPath = Join-Path $stage ($packageName + '.zip')
+$phase = '初始化'
+Write-Host ('[构建] v' + $version + ' / PowerShell ' + $PSVersionTable.PSVersion + ' / SkipZip=' + [bool]$SkipZip)
 
 function Assert-X64Pe([string]$Path) {
     $bytes = [IO.File]::ReadAllBytes($Path)
@@ -58,6 +65,7 @@ function Copy-PackageFile([string]$From, [string]$RelativePath) {
 }
 
 try {
+    $phase = '编译'; Write-Host ('[构建] ' + $phase)
     New-Item -ItemType Directory -Path $buildRoot, $packageRoot -Force | Out-Null
     $runtimeRoot = Join-Path $buildRoot '运行模块'
     & (Join-Path $sourceRoot 'build-native.ps1') -Compiler $Compiler -Destination $runtimeRoot
@@ -80,10 +88,29 @@ try {
         throw '运行时 Lua 脚本与源码不一致。'
     }
 
-    $layoutReport = Join-Path $buildRoot 'layout-check.json'
-    $check = Start-Process -FilePath $mainPath -ArgumentList @('--layout-check', ('"' + $layoutReport + '"')) -PassThru
+    $phase = '离线布局检查'; Write-Host ('[构建] ' + $phase)
+    # Run a copy of the GUI without any runtime DLL or Lua next to it. Both an
+    # environment marker and the entry argument enforce offline mode in-process.
+    $validationRoot = Join-Path $stage 'layout-check'
+    New-Item -ItemType Directory -Path $validationRoot -Force | Out-Null
+    $validationMain = Join-Path $validationRoot $mainName
+    Copy-Item -LiteralPath $mainPath -Destination $validationMain
+    Copy-Item -LiteralPath ($mainPath + '.config') -Destination ($validationMain + '.config')
+    $layoutReport = Join-Path $validationRoot 'layout-check.json'
+    $check = New-Object Diagnostics.Process
+    $check.StartInfo.FileName = $validationMain
+    $check.StartInfo.Arguments = '--layout-check "' + $layoutReport + '"'
+    $check.StartInfo.UseShellExecute = $false
+    $check.StartInfo.CreateNoWindow = $true
+    $check.StartInfo.EnvironmentVariables['TF3_MODIFIER_BUILD_CHECK'] = '1'
+    $check.StartInfo.EnvironmentVariables['TF3_MODIFIER_LAYOUT_REPORT'] = $layoutReport
+    if (-not $check.Start()) { throw '离线布局检查进程启动失败。' }
     try {
-        if (-not $check.WaitForExit(45000)) { $check.Kill(); throw '离线界面布局检查超时。' }
+        Write-Host ('[构建] 离线检查 PID：' + $check.Id + '；运行模块未复制到检查目录。')
+        if (-not $check.WaitForExit(45000)) {
+            $check.Kill(); $check.WaitForExit(5000) | Out-Null
+            throw '离线界面布局检查超时。'
+        }
         if ($check.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $layoutReport)) {
             if (Test-Path -LiteralPath $layoutReport) { Write-Host ([IO.File]::ReadAllText($layoutReport)) }
             throw '离线界面布局检查未通过。'
@@ -97,6 +124,7 @@ try {
         Write-Host ('离线布局检查通过：' + $layoutChecks.Count + ' 项；未连接游戏。')
     } finally { $check.Dispose() }
 
+    $phase = '整理便携文件'; Write-Host ('[构建] ' + $phase)
     Copy-PackageFile $mainPath $mainName
     Copy-PackageFile ($mainPath + '.config') ($mainName + '.config')
     Copy-PackageFile $runtimePath ('运行模块/' + $runtimeName)
@@ -114,6 +142,7 @@ try {
             }
         })
     $verification = '完成源码编译、x64 PE、版本、Lua 一致性、离线界面布局与 ZIP 校验；未连接游戏，不代表游戏功能已实测。'
+    if ($SkipZip) { $verification = '完成源码编译、x64 PE、版本、Lua 一致性、离线界面布局与文件清单校验；跳过 ZIP；未连接游戏。' }
     $manifest = [ordered]@{
         product = '狂热运输3修改器'
         version = $version
@@ -132,13 +161,27 @@ try {
     $manifestPath = Join-Path $packageRoot '发布清单.json'
     [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 10), $utf8)
 
-    Add-Type -AssemblyName System.IO.Compression
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
     $expected = @($records) + @([ordered]@{
         path = '发布清单.json'
         bytes = (Get-Item -LiteralPath $manifestPath).Length
         sha256 = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash
     })
+    if ($SkipZip) {
+        $phase = '校验并输出文件夹'; Write-Host ('[构建] ' + $phase)
+        foreach ($record in $expected) {
+            $file = Get-Item -LiteralPath (Join-Path $packageRoot $record.path)
+            if ($file.Length -ne $record.bytes -or (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash -ne $record.sha256) {
+                throw ('文件夹校验失败：' + $record.path)
+            }
+        }
+        Move-Item -LiteralPath $packageRoot -Destination $folderPath
+        Write-Host ('可直接运行的文件夹：' + $folderPath)
+        Write-Host '已跳过 ZIP 压缩。'
+        return
+    }
+    $phase = '创建并校验 ZIP'; Write-Host ('[构建] ' + $phase)
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
     # Explicit entry names avoid CreateFromDirectory's legacy backslash paths
     # under Windows PowerShell 5.1 / .NET Framework compatibility settings.
     $archive = [IO.Compression.ZipFile]::Open(
@@ -197,6 +240,32 @@ try {
             '便携包与校验文件已生成；工作流将在下一步发布到 GitHub Releases。'
         ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
     }
+} catch {
+    Write-Host ('[构建失败阶段] ' + $phase)
+    throw
 } finally {
-    if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
+    # Cleanup is best-effort: a locked file must not replace the original error,
+    # or turn a successfully verified package into a failed build.
+    $cleanupError = $null
+    for ($attempt = 0; $attempt -lt 4; $attempt++) {
+        try {
+            if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction Stop }
+            $cleanupError = $null; break
+        } catch {
+            $cleanupError = $_.Exception.Message
+            if ($attempt -lt 3) { Start-Sleep -Milliseconds 400 }
+        }
+    }
+    if ($cleanupError) {
+        Write-Warning ('临时目录未完全清理：' + $stage + '；' + $cleanupError) -WarningAction Continue
+        try {
+            foreach ($game in @(Get-Process -Name 'TransportFever3' -ErrorAction SilentlyContinue)) {
+                foreach ($loaded in $game.Modules) {
+                    if ($loaded.FileName.StartsWith($stage + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+                        Write-Warning ('占用来源：游戏 PID ' + $game.Id + ' 仍加载了 ' + $loaded.FileName + '。请正常退出游戏后再删除临时目录。') -WarningAction Continue
+                    }
+                }
+            }
+        } catch { Write-Warning '无法读取占用进程的模块信息；请关闭占用程序后手动删除上述临时目录。' -WarningAction Continue }
+    }
 }

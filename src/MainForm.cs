@@ -12,7 +12,7 @@ namespace TransportFever3Trainer
 {
     sealed class MainForm : WindowChrome
     {
-        sealed class RequestItem { public object Command; public Action<bool, string> Completed; }
+        sealed class RequestItem { public object Command; public string Scope; public Action<bool, string> Completed; }
         public readonly UserPrefs Prefs = UserPrefs.Load();
         public Dictionary<string, object> State = new Dictionary<string, object>();
         public string StateJson { get { return Data.Json.Serialize(State); } }
@@ -26,7 +26,7 @@ namespace TransportFever3Trainer
         readonly Surface sidebar = new Surface { Name = "sidebar" }, header = new Surface { Name = "page-header" };
         readonly Panel pages = new Panel();
         readonly FlowLayoutPanel navigationBar = new FlowLayoutPanel(), actions = new FlowLayoutPanel();
-        readonly Label heading, stats, status, online, appTitle, appCaption;
+        readonly Label heading, stats, status, online, appTitle, appCaption, pageHint;
         readonly AppMark mark = new AppMark();
         readonly PillButton connect, reset;
         readonly ToolTip tooltips = new ToolTip();
@@ -51,13 +51,14 @@ namespace TransportFever3Trainer
         {
             offline = offlineCheck; Text = "狂热运输3修改器 · v" + Protocol.Version; ClientSize = new Size(1220, 780);
             heading = LabelFor("常用功能", 20, true); heading.Name = "page-heading";
+            pageHint = LabelFor("", 9); pageHint.ForeColor = Theme.Muted; pageHint.Name = "page-help";
             stats = LabelFor("连接游戏后显示公司与时间信息", 10); stats.ForeColor = Theme.Muted;
             online = LabelFor("● 游戏未连接", 10); online.ForeColor = Theme.Muted;
             status = LabelFor("请进入地图，再连接游戏。", 9); status.ForeColor = Theme.Muted; status.Name = "status-message";
             appTitle = LabelFor("狂热运输 3", 10, true); appCaption = LabelFor("修改器", 9); appCaption.ForeColor = Theme.Muted;
             sidebar.Controls.Add(mark); sidebar.Controls.Add(appTitle); sidebar.Controls.Add(appCaption);
             sidebar.Controls.Add(navigationBar); sidebar.Controls.Add(actions);
-            header.Controls.Add(heading); header.Controls.Add(stats); header.Controls.Add(online);
+            header.Controls.Add(heading); header.Controls.Add(pageHint); header.Controls.Add(stats); header.Controls.Add(online);
             Controls.Add(sidebar); Controls.Add(header); Controls.Add(pages); Controls.Add(status);
             pages.BackColor = Theme.Back; navigationBar.BackColor = actions.BackColor = Theme.Card;
             navigationBar.Name = "page-navigation"; actions.Name = "sidebar-actions";
@@ -133,11 +134,16 @@ namespace TransportFever3Trainer
                 }
 
                 int contentLeft = sidebar.Right + gap, w = Math.Max(1, ClientSize.Width - contentLeft - pad); bool wide = w >= P(900);
-                header.SetBounds(contentLeft, pad, w, P(wide ? 92 : 128));
+                bool compactHeader = ClientSize.Height < P(560);
+                header.SetBounds(contentLeft, pad, w, P(compactHeader ? 96 : wide ? 112 : 136));
+                online.Visible = stats.Visible = !compactHeader;
+                appCaption.Text = compactHeader ? CaptureReady ? "已连接" : "未连接" : "修改器";
+                appCaption.ForeColor = compactHeader && CaptureReady ? Theme.Green : Theme.Muted;
                 heading.SetBounds(P(20), P(14), Math.Max(1, wide ? w / 2 - P(30) : w - P(40)), P(36));
-                online.SetBounds(P(20), P(54), Math.Max(1, wide ? w / 2 - P(30) : w - P(40)), P(24));
-                if (wide) stats.SetBounds(w / 2 + P(16), P(20), w / 2 - P(36), P(58));
-                else stats.SetBounds(P(20), P(86), Math.Max(1, w - P(40)), P(34));
+                pageHint.SetBounds(P(20), P(52), Math.Max(1, wide ? w / 2 - P(30) : w - P(40)), P(compactHeader ? 34 : wide ? 38 : 22));
+                online.SetBounds(P(20), P(wide ? 90 : 76), Math.Max(1, wide ? w / 2 - P(30) : w - P(40)), P(22));
+                if (wide) stats.SetBounds(w / 2 + P(16), P(20), w / 2 - P(36), P(72));
+                else stats.SetBounds(P(20), P(104), Math.Max(1, w - P(40)), P(28));
                 int pageTop = header.Bottom + P(12), footer = P(28);
                 pages.SetBounds(contentLeft, pageTop, w, Math.Max(1, ClientSize.Height - pageTop - pad - footer));
                 status.SetBounds(contentLeft + P(2), ClientSize.Height - pad - footer + P(4), Math.Max(1, w - P(4)), footer);
@@ -204,10 +210,11 @@ namespace TransportFever3Trainer
             foreach (var view in pageViews) view.Value.Visible = view.Key == id;
             foreach (var button in navigation) button.Value.Primary = button.Key == id;
             heading.Text = id == "features" ? "常用功能 · " + cards.Count : id == "cargo" ? "货物添加" : id == "world" ? "世界管理" : id == "camera" ? "镜头书签" : "连接诊断";
+            pageHint.Text = id == "features" ? "选择分类，设置数值后再开启功能。" : id == "cargo" ? "选择货物 → 选择库存 → 设置每种数量并添加。" : id == "world" ? "选择城镇或产业，再修改参数、名称或定位镜头。" : id == "camera" ? "读取镜头后调整并应用，常用地点可保存为书签。" : "导出诊断，查看连接与功能不可用的具体原因。";
             Arrange();
         }
         public void SelectFirst() { foreach (var catalog in catalogs) catalog.SelectFirst(); }
-        public void Notify(string text) { if (closing) return; status.Text = text; tooltips.SetToolTip(status, text); }
+        public void Notify(string text, bool error = false) { if (closing) return; status.Text = text; status.ForeColor = error ? Color.FromArgb(180, 45, 52) : Theme.Muted; tooltips.SetToolTip(status, text); }
         public bool IsAvailable(string id) { return CaptureReady && Data.Bool(Data.Get(Data.Get(State, "capabilities"), id), "supported"); }
         public string UnavailableReason(string id) { return Data.Str(Data.Get(Data.Get(State, "capabilities"), id), "reason", "当前接口尚未通过验证"); }
         public void ConnectGame()
@@ -233,8 +240,8 @@ namespace TransportFever3Trainer
                 var data = Data.Obj(Data.Json.DeserializeObject(Data.Json.Serialize(command))); string op = Data.Str(data, "op"), id = op == "set" ? Data.Str(data, "id") : op;
                 if (op != "reset" && op != "refresh" && !(op == "set" && !Data.Bool(data, "enabled")) && !IsAvailable(id)) error = UnavailableReason(id);
             }
-            if (error != null) { Notify(error); if (completed != null) completed(false, error); return; }
-            requests.Enqueue(new RequestItem { Command = command, Completed = completed }); SendNext();
+            if (error != null) { Notify(error, true); if (completed != null) completed(false, error); return; }
+            requests.Enqueue(new RequestItem { Command = command, Scope = NameScope, Completed = completed }); SendNext();
         }
         void CancelQueued(string message)
         { while (requests.Count > 0) { var entry = requests.Dequeue(); if (entry.Completed != null) entry.Completed(false, message); } }
@@ -242,6 +249,12 @@ namespace TransportFever3Trainer
         {
             if (sending || requests.Count == 0 || bridge == null) return;
             activeRequest = requests.Dequeue();
+            if (!CaptureReady || activeRequest.Scope != NameScope)
+            {
+                string message = "地图或连接已切换，已取消尚未执行的操作。";
+                var entry = activeRequest; activeRequest = null;
+                if (entry.Completed != null) entry.Completed(false, message); CancelQueued(message); Notify(message, true); return;
+            }
             try { bridge.Send("return __SZTF3F6.dispatch(" + Data.LuaObject(activeRequest.Command) + ")"); sending = true; Notify("正在提交操作…"); }
             catch (Exception e) { var entry = activeRequest; activeRequest = null; Notify(e.Message); if (entry.Completed != null) entry.Completed(false, e.Message); CancelQueued(e.Message); }
         }
@@ -256,13 +269,6 @@ namespace TransportFever3Trainer
             try
             {
                 bridge.Poll();
-                if (sending && !bridge.Pending)
-                {
-                    sending = false; var entry = activeRequest; activeRequest = null; bool success = bridge.LastResult == 1;
-                    string message = success ? Data.Str(Data.Json.DeserializeObject(bridge.Response), "message", "操作完成") : bridge.Response;
-                    Notify(message); if (entry != null && entry.Completed != null) entry.Completed(success, message);
-                    if (!success) CancelQueued(message); SendNext();
-                }
                 if (lastSnapshot != bridge.Snapshot)
                 {
                     lastSnapshot = bridge.Snapshot; State = Data.Obj(Data.Json.DeserializeObject(lastSnapshot));
@@ -273,11 +279,22 @@ namespace TransportFever3Trainer
                         steamBuild = bridge.GameBuild, pe = bridge.PeFingerprint, runtimeProtocol = Protocol.RuntimeProtocol };
                     UpdateState();
                 }
+                if (sending && !bridge.Pending)
+                {
+                    sending = false; var entry = activeRequest; activeRequest = null;
+                    bool sameMap = entry != null && entry.Scope == NameScope && CaptureReady;
+                    bool success = bridge.LastResult == 1 && sameMap;
+                    string message = !sameMap ? "地图或连接已切换，已取消尚未执行的操作。" : success ? Data.Str(Data.Json.DeserializeObject(bridge.Response), "message", "操作完成") : bridge.Response;
+                    Notify(message, !success); if (entry != null && entry.Completed != null) entry.Completed(success, message);
+                    if (!success) CancelQueued(message); SendNext();
+                }
+                online.Text = CaptureReady ? Busy ? "● 游戏已连接 · 操作执行中" : "● 游戏已连接" : "● 游戏未连接";
+                if (ClientSize.Height < P(560)) { appCaption.Text = CaptureReady ? "已连接" : "未连接"; appCaption.ForeColor = CaptureReady ? Theme.Green : Theme.Muted; }
                 foreach (var catalog in catalogs) catalog.UpdateActions(); camera.UpdateState(); Enable(reset, CaptureReady && !Busy);
             }
             catch (Exception e)
             {
-                Notify(e.Message); bridge.Dispose(); bridge = null; State = new Dictionary<string, object>(); sending = false;
+                Notify(e.Message, true); bridge.Dispose(); bridge = null; State = new Dictionary<string, object>(); sending = false;
                 if (activeRequest != null && activeRequest.Completed != null) activeRequest.Completed(false, e.Message);
                 activeRequest = null; CancelQueued(e.Message); UpdateState();
             }
@@ -322,7 +339,9 @@ namespace TransportFever3Trainer
         }
         public void SavePrefs() { try { Prefs.Save(); } catch (Exception e) { Notify("设置保存失败：" + e.Message); } }
         public void Remember(string kind, string id)
-        { var recent = Prefs.Set(kind, true); recent.Remove(id); recent.Insert(0, id); if (recent.Count > 30) recent.RemoveRange(30, recent.Count - 30); SavePrefs(); }
+        { RememberMany(kind, new[] { id }); }
+        public void RememberMany(string kind, IEnumerable<string> ids)
+        { var recent = Prefs.Set(kind, true); foreach (string id in ids) { recent.Remove(id); recent.Insert(0, id); } if (recent.Count > 30) recent.RemoveRange(30, recent.Count - 30); SavePrefs(); }
         void BindKey(FeatureCard card)
         {
             int key; Prefs.keys.TryGetValue(card.Id, out key);
@@ -362,11 +381,19 @@ namespace TransportFever3Trainer
             try
             {
                 if (!offline || bridge != null) throw new InvalidOperationException("布局检查必须与游戏连接隔离。");
-                var preview = new { playing = true, world = 1, nameScope = "layout", catalog = new[] { new { id = "1", name = "原油", category = "货物", description = "货物示例" } },
+                bool accessBlocked = false; try { BuildMode.RequireLiveAccess(); } catch (InvalidOperationException) { accessBlocked = true; }
+                if (!accessBlocked) throw new InvalidOperationException("离线检查没有阻止游戏连接。");
+                report.Add(new { buildGuard = "live game access blocked", pass = true });
+                var preview = new { playing = true, world = 1, nameScope = "layout", camera = new { x = 0, y = 0, z = 500, w = 0, v = 1 }, catalog = new[] { new { id = "1", name = "原油", category = "货物", description = "货物示例" }, new { id = "2", name = "木材", category = "货物", description = "货物示例" } },
                     worlds = new object[] { new { id = "20", name = "北港采油平台", gameName = "北港采油平台", category = "产业", productivity = 1, description = "产业名称读取示例" },
                         new { id = "21", name = "新港", gameName = "新港", category = "城镇", res = 500, commercial = 200, industry = 200, description = "城镇示例" },
                         new { id = "22", name = "采油平台", gameName = "", category = "产业", productivity = 1, description = "名称读取回退示例" } },
-                    stocks = new[] { new { id = "30", nameEntity = "20", name = "北港采油平台", gameName = "北港采油平台", slots = new[] { new { allowed = new[] { "1" } } } } } };
+                    stocks = new object[] {
+                        new { id = "30", nameEntity = "20", name = "北港采油平台", gameName = "北港采油平台", category = "产业", position = new { x = 200, y = 0 }, slots = new[] { new { index = 0, cargo = 1, mixed = true, allowed = new[] { "1", "2" }, capacity = 200, count = 0 } } },
+                        new { id = "31", name = "已满仓库", category = "仓库", position = new { x = 10, y = 0 }, slots = new[] { new { index = 0, cargo = 1, mixed = true, allowed = new[] { "1", "2" }, capacity = 100, count = 100 } } },
+                        new { id = "32", name = "附近仓库", category = "仓库", position = new { x = 50, y = 0 }, slots = new[] { new { index = 0, cargo = 1, mixed = true, allowed = new[] { "1", "2" }, capacity = 100, count = 0 } } },
+                        new { id = "33", name = "未知位置库存", category = "仓库", slots = new[] { new { index = 0, cargo = 1, mixed = true, allowed = new[] { "1", "2" }, capacity = 1000, count = 0 } } }
+                    } };
                 State = Data.Obj(Data.Json.DeserializeObject(Data.Json.Serialize(preview))); UpdateState(); SelectFirst(); MinimumSize = Size.Empty;
                 var unnamed = Data.Rows(Data.Get(State, "worlds"))[2]; string aliasKey = NameKey(unnamed), previousAlias;
                 bool hadAlias = Prefs.displayNames.TryGetValue(aliasKey, out previousAlias);
@@ -381,7 +408,18 @@ namespace TransportFever3Trainer
                 }
                 finally { unnamed["gameName"] = ""; State["nameScope"] = "layout"; if (hadAlias) Prefs.displayNames[aliasKey] = previousAlias; else Prefs.displayNames.Remove(aliasKey); }
                 report.Add(new { names = "game-first, fallback, map-isolation", pass = true });
-                var cases = new[] { new { w = 640, h = 480, scale = 1f }, new { w = 1280, h = 720, scale = 1f },
+                var cargoIds = new List<string> { "1", "2" };
+                var choices = CargoTargets.Find(Data.Get(State, "stocks"), cargoIds, 30, Data.Get(State, "camera"), DisplayName);
+                if (CargoTargets.Recommend(choices).Id != "32") throw new Exception("推荐没有排除已满库存或未知位置");
+                choices = CargoTargets.Find(Data.Get(State, "stocks"), cargoIds, 60, Data.Get(State, "camera"), DisplayName);
+                var clipped = CargoTargets.Recommend(choices);
+                if (clipped.Id != "32" || !clipped.Clipped || clipped.Allocation.Total != 100) throw new Exception("多种货物的共享容量裁剪异常");
+                var matching = Data.Json.DeserializeObject("{\"slots\":[{\"allowed\":[\"1\",\"2\"],\"capacity\":1,\"count\":0,\"mixed\":false},{\"allowed\":[\"1\"],\"capacity\":1,\"count\":0,\"mixed\":false}]}");
+                var plan = CargoTargets.Plan(matching, cargoIds, 1);
+                if (plan == null || plan[0] != 1 || plan[1] != 0) throw new Exception("货物槽位匹配异常");
+                catalogs.First(c => c.Kind == "cargo").ValidateCargoFlow();
+                report.Add(new { cargo = "nearest-compatible, shared-capacity, matching, selection-preservation", pass = true });
+                var cases = new[] { new { w = 604, h = 401, scale = 1f }, new { w = 640, h = 480, scale = 1f }, new { w = 1280, h = 720, scale = 1f },
                     new { w = 1366, h = 768, scale = 1.25f }, new { w = 1920, h = 1080, scale = 1.5f },
                     new { w = 1920, h = 1080, scale = 2f }, new { w = 2560, h = 1440, scale = 1f }, new { w = 2560, h = 1440, scale = 2f } };
                 foreach (var test in cases)

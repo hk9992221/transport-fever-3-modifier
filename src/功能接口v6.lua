@@ -1,5 +1,5 @@
-local S=(type(__SZTF3F6)=='table' and __SZTF3F6.protocol==6 and __SZTF3F6) or {protocol=6,version='1.1.1',settings={},backups={},jobs={},lastMessage='已连接游戏内存',lastError='',catalog={},stocks={},worlds={},tasks={},nextScan=0,commandCount=0}
-S.version='1.1.1';S.protocol=6
+local S=(type(__SZTF3F6)=='table' and __SZTF3F6.protocol==6 and __SZTF3F6) or {protocol=6,version='1.1.2',settings={},backups={},jobs={},lastMessage='已连接游戏内存',lastError='',catalog={},stocks={},worlds={},tasks={},nextScan=0,commandCount=0}
+S.version='1.1.2';S.protocol=6
 local CT=api and api.type and api.type.ComponentType or {}
 local isCallable
 local function arr(t) return setmetatable(t or {},{jsonArray=true}) end
@@ -178,8 +178,13 @@ local function stockOptions()
  local sl=component(sid,CT.STOCK_LIST)
  if sl and not seen[sid] then seen[sid]=true;local slots=arr()
  for k,st in pairs(sl.stocks) do local i=tonumber(k)-1;local types=api.engine.util.stock.getStockCargoTypes(sid,i);local allowed=arr();for _,v in pairs(types) do allowed[#allowed+1]=v end
- slots[#slots+1]={index=i,cargo=st.cargoType,allowed=allowed,capacity=st.capacity,count=api.engine.system.simEntityAtStockSystem.getStockCount(sid,i),kind=tostring(st.type)} end
- r[#r+1]={id=tostring(sid),nameEntity=tostring(e),gameName=gameName(e) or '',name=name(e,ct==CT.WAREHOUSE and '仓库' or ct==CT.TOWN and '城镇库存' or '产业库存'),slots=slots}
+ slots[#slots+1]={index=i,cargo=st.cargoType,mixed=st.mixedTypes==true,allowed=allowed,capacity=st.capacity,count=api.engine.system.simEntityAtStockSystem.getStockCount(sid,i),kind=tostring(st.type)} end
+ local position;local getTransl=api.type.Mat4f and api.type.Mat4f.getTransl
+ if isCallable(getTransl) then
+  local ok,p=pcall(function()local con=component(c.construction,CT.CONSTRUCTION);return con and getTransl(con.transf) end)
+  if ok and p and finite(p.x) and finite(p.y) then position={x=p.x,y=p.y} end
+ end
+ r[#r+1]={id=tostring(sid),nameEntity=tostring(e),gameName=gameName(e) or '',name=name(e,ct==CT.WAREHOUSE and '仓库' or ct==CT.TOWN and '城镇库存' or '产业库存'),category=ct==CT.WAREHOUSE and '仓库' or ct==CT.TOWN and '城镇库存' or '产业',position=position,slots=slots}
  end end end;return r
 end
 local function scan()
@@ -198,16 +203,72 @@ local function scan()
  S.nextScan=now()+3
 end
 local function addCargo(c)
- local cargo=tonumber(c.id);local target=tonumber(c.target);local count=math.floor(tonumber(c.count) or 1);assert(count>=1 and count<=10000,'单次数量应在 1–10000 之间');assert(cargo and cargo~=0,'旅客由人口模拟生成，不能当作仓储货物添加')
- local sl=component(target,CT.STOCK_LIST);assert(sl,'请选择当前地图的目标库存');local index
- for k,st in pairs(sl.stocks) do local i=tonumber(k)-1;local types=api.engine.util.stock.getStockCargoTypes(target,i);for _,v in pairs(types) do if v==cargo then index=i;break end end;if index then break end end
- assert(index~=nil,'目标库存不接收这种货物，请选择兼容库存')
- local before=api.engine.system.simEntityAtStockSystem.getStockCountForCargoType(target,index,cargo)
- local amount=before+count;local used=api.engine.system.simEntityAtStockSystem.getStockCount(target,index);assert(used+count<=sl.stocks[index+1].capacity,'库存空间不足，请减少数量')
- send(api.cmd.debug.makeStockSetCargoAmountCmd(target,index,amount,api.res.cargoTypeRep.getName(cargo)))
- S.lastMessage='货物添加命令已提交';S.nextScan=0
+ local target=tonumber(c.target);local count=tonumber(c.count) or 1
+ assert(finite(count) and count==math.floor(count) and count>=1 and count<=10000,'每种货物的数量应为 1–10000 的整数')
+ assert(c.world==nil or tonumber(c.world)==S.world,'地图已经切换，请重新选择库存')
+ assert(not S.cargoResult or S.cargoResult.status~='pending','上一批货物尚未确认，请等待游戏执行')
+ local ids,unique={},{};local raw=c.ids or {c.id};assert(type(raw)=='table','请选择货物')
+ for _,id in ipairs(raw) do local n=tonumber(id);assert(finite(n) and n>0 and n==math.floor(n),'旅客不能当作仓储货物添加');if not unique[n] then ids[#ids+1]=n;unique[n]=true end end
+ assert(#ids>0 and #ids<=64,'请选择 1–64 种货物')
+ local sl=component(target,CT.STOCK_LIST);assert(sl,'请选择当前地图的目标库存')
+ local slots={};for k,st in pairs(sl.stocks) do
+  local index=tonumber(k)-1;local used=api.engine.system.simEntityAtStockSystem.getStockCount(target,index)
+  local allowed={};for _,id in pairs(api.engine.util.stock.getStockCargoTypes(target,index)) do if st.mixedTypes or used==0 or st.cargoType==id then allowed[id]=true end end
+  slots[#slots+1]={index=index,allowed=allowed,free=math.max(0,math.floor(st.capacity-used)),mixed=st.mixedTypes==true,locked=nil}
+ end
+ table.sort(slots,function(a,b)return a.index<b.index end)
+ local all,order,amounts,placements={},{},{},{}
+ for cargo,id in ipairs(ids) do
+  all[#all+1]=cargo;amounts[cargo]=0;placements[cargo]={};local compatible=false
+  for _,slot in ipairs(slots) do if slot.allowed[id] then compatible=true;break end end
+  assert(compatible,'目标库存不接收某种所选货物，请选择兼容库存')
+ end
+ for s=1,#slots do order[s]=s end
+ local function match(active,units)
+  local assigned,occupants={},{};for s=1,#slots do occupants[s]={} end;local place
+  place=function(cargo,seen)
+   for _,s in ipairs(order) do local slot=slots[s];if not seen[s] and units[s]>0 and slot.allowed[ids[cargo]] then
+    seen[s]=true
+    if #occupants[s]<units[s] then occupants[s][#occupants[s]+1]=cargo;assigned[cargo]=s;return true end
+    for i,other in ipairs(occupants[s]) do if place(other,seen) then occupants[s][i]=cargo;assigned[cargo]=s;return true end end
+   end end;return false
+  end
+  for _,cargo in ipairs(active) do place(cargo,{}) end;return assigned
+ end
+ local function take(cargo,s,amount)
+  amounts[cargo]=amounts[cargo]+amount;placements[cargo][s]=(placements[cargo][s] or 0)+amount
+  slots[s].free=slots[s].free-amount;if not slots[s].mixed then slots[s].locked=cargo end
+ end
+ local units={};for s,slot in ipairs(slots) do units[s]=slot.free<count and 0 or (slot.mixed and math.min(#ids,math.floor(slot.free/count)) or 1) end
+ local full=match(all,units);for _,cargo in ipairs(all) do if full[cargo] then take(cargo,full[cargo],count) end end
+ local waiting={};for _,cargo in ipairs(all) do if amounts[cargo]==0 then waiting[#waiting+1]=cargo end end
+ local function degree(s)local n=0;for _ in pairs(slots[s].allowed)do n=n+1 end;return n end
+ table.sort(order,function(a,b)local da,db=degree(a),degree(b);if da~=db then return da<db end;if slots[a].free~=slots[b].free then return slots[a].free>slots[b].free end;return a<b end)
+ for s,slot in ipairs(slots) do if slot.free<1 or slot.locked then units[s]=0 else units[s]=slot.mixed and math.min(#waiting,slot.free) or 1 end end
+ local partial=match(waiting,units)
+ for _,s in ipairs(order) do local occupants={};for _,cargo in ipairs(waiting) do if partial[cargo]==s then occupants[#occupants+1]=cargo end end
+  for i,cargo in ipairs(occupants) do take(cargo,s,math.min(count,math.floor(slots[s].free/(#occupants-i+1)))) end
+ end
+ for _,cargo in ipairs(all) do for _,s in ipairs(order) do local slot=slots[s]
+  if amounts[cargo]<count and slot.free>0 and slot.allowed[ids[cargo]] and (slot.mixed or not slot.locked or slot.locked==cargo) then take(cargo,s,math.min(count-amounts[cargo],slot.free)) end
+ end end
+ local token=tostring(c.request or '');assert(#token<=80,'货物请求标识无效')
+ local commands,planned={},0
+ for cargo,id in ipairs(ids) do for s,slot in ipairs(slots) do local amount=placements[cargo][s] or 0;if amount>0 then
+  local before=api.engine.system.simEntityAtStockSystem.getStockCountForCargoType(target,slot.index,id)
+  commands[#commands+1]={command=api.cmd.debug.makeStockSetCargoAmountCmd(target,slot.index,before+amount,api.res.cargoTypeRep.getName(id)),id=tostring(id),amount=amount};planned=planned+amount
+ end end end
+ local result={request=token,world=S.world,status=#commands==0 and 'completed' or 'pending',remaining=#commands,applied=0,total=#commands,added=0,planned=planned,requested=#ids*count,addedIds=arr()};S.cargoResult=result
+ S.lastMessage=#commands==0 and '库存已满，无需添加' or '货物已提交，等待游戏执行';S.nextScan=0;local addedSet={}
+ local function done(success,entry)
+  if S.cargoResult~=result or result.world~=S.world then return end
+  result.remaining=result.remaining-1;if success then result.applied=result.applied+1;result.added=result.added+entry.amount;if not addedSet[entry.id] then addedSet[entry.id]=true;result.addedIds[#result.addedIds+1]=entry.id end end
+  if result.remaining==0 then result.status=result.applied==result.total and 'completed' or 'failed';S.lastMessage='实际添加 '..result.added..' 件'..(planned<result.requested and '，超出的数量已按剩余库存空间调整' or '')..(result.status=='failed' and '；部分操作失败，请刷新库存' or '');if result.status=='failed' then S.lastError=S.lastMessage end end
+  S.nextScan=0
+ end
+ for i=1,#commands do local entry=commands[i];local reported=false;local function finish(success)if reported then return end;reported=true;done(success,entry)end;local ok=pcall(send,entry.command,finish);if not ok then finish(false) end end
 end
-local function cameraData() local v=api.gui.camera.getCameraData();return {x=v.x,y=v.y,z=v.z,w=v.w,v=v.q} end
+local function cameraData() local getter=api and api.gui and api.gui.camera and api.gui.camera.getCameraData;assert(isCallable(getter),'镜头读取接口不可用');local v=getter();return {x=v.x,y=v.y,z=v.z,w=v.w,v=v.q} end
 local function dateValue(n)
  n=math.floor(n);local y=math.floor(n/10000);local m=math.floor(n/100)%100;local d=n%100;assert(y>=1850 and y<=2500 and m>=1 and m<=12,'日期必须在 1850–2500 年之间');local days={31,((y%4==0 and y%100~=0)or y%400==0)and 29 or 28,31,30,31,30,31,31,30,31,30,31};assert(d>=1 and d<=days[m],'日期不存在');return api.type.Date.new(y,m,d)
 end
@@ -288,8 +349,8 @@ end
 function S.tick(active)
  local coreOK,coreError=pcall(function()funcs({'api.engine.entityExists','api.engine.getComponent','api.engine.getEntitiesWithComponent','api.engine.util.getPlayer','api.engine.util.getWorld','api.util.getApplicationTime'}) end);if not coreOK then return json({playing=false,settings={},capabilities={},message='等待地图核心接口验证',error=tostring(coreError)}) end
  local ok,player=pcall(api.engine.util.getPlayer);local w=api.engine.util.getWorld();local a=ok and component(player,CT.ACCOUNT)
- if not a then S.settings={};S.backups={};S.jobs={};S.speedBackup=nil;S.pendingFinance=nil;S.renameResult=nil;S.nameScope=nil;S.player=nil;return json({playing=false,settings={},capabilities=S.capabilities,message='请进入可运行地图'}) end
- if S.player and (S.player~=player or S.world~=w) then S.settings={};S.backups={};S.jobs={};S.speedBackup=nil;S.renameResult=nil;S.nameScope=nil;S.nextScan=0 end
+ if not a then S.settings={};S.backups={};S.jobs={};S.speedBackup=nil;S.pendingFinance=nil;S.renameResult=nil;S.cargoResult=nil;S.catalog=arr();S.stocks=arr();S.worlds=arr();S.nameScope=nil;S.player=nil;return json({playing=false,settings={},capabilities=S.capabilities,message='请进入可运行地图'}) end
+ if S.player and (S.player~=player or S.world~=w) then S.settings={};S.backups={};S.jobs={};S.speedBackup=nil;S.renameResult=nil;S.cargoResult=nil;S.catalog=arr();S.stocks=arr();S.worlds=arr();S.nameScope=nil;S.nextScan=0;S.nextCapability=0 end
  S.player=player;S.world=w
  if not S.nameScope then S.nameScope=string.format('%.9f:%s',now(),tostring(w)) end
  local baseOK,baseError=pcall(function()fields(a,{'balance','loan'},'ACCOUNT');fields(component(w,CT.GAME_TIME),{'gameTime','timeOfDaySec'},'GAME_TIME');fields(component(w,CT.GAME_SPEED),{'millisPerDay','speedup'},'GAME_SPEED') end);if not baseOK then return json({playing=false,settings={},capabilities={},message='当前地图组件尚未通过验证',error=tostring(baseError)}) end
@@ -312,8 +373,9 @@ function S.tick(active)
  if t>=(S.nextMaintain or 0) then S.nextMaintain=t+3;if S.settings.vehicle_speed or S.settings.comfort or S.settings.no_emissions then applyVehicles() end;if S.settings.productivity or S.settings.industry_alive then applyIndustries() end end
  end
  if t>=S.nextScan then local success,err=pcall(scan);if not success then S.lastError=tostring(err);S.nextScan=t+3 end end
- local date={year=0,month=0,day=0};local dateOK,dateRead=pcall(function()return api.engine.util.getCalendarDate(gt.gameTime) end);if dateOK and dateRead then date=dateRead end;local rank={level=0,potentialLevel=0,experience=0};local rankOK,rankRead=pcall(company);if rankOK and rankRead then rank=rankRead end;local cam={};if S.capabilities.camera and S.capabilities.camera.supported then cam=cameraData() end;local world=component(w,CT.WORLD)
- return json({playing=true,player=player,world=w,nameScope=S.nameScope,balance=a.balance,loan=a.loan,rank=rank.level,potentialRank=rank.potentialLevel,experience=rank.experience,date=string.format('%04d-%02d-%02d',date.year,date.month,date.day),dateNumber=date.year*10000+date.month*100+date.day,dayLength=gs.millisPerDay,speed=gs.speedup,daytime=gt.timeOfDaySec/3600,clouds=world and world.cloudCoverage or nil,settings=S.settings,capabilities=S.capabilities,catalog=S.catalog,stocks=S.stocks,worlds=S.worlds,tasks=S.tasks,camera=cam,renameResult=S.renameResult,message=S.lastMessage,error=S.lastError,diagnostics={version=S.version,protocol=S.protocol,commands=S.commandCount,backups=(function()local n=0;for k in pairs(S.backups)do n=n+1 end;return n end)()}})
+ local date={year=0,month=0,day=0};local dateOK,dateRead=pcall(function()return api.engine.util.getCalendarDate(gt.gameTime) end);if dateOK and dateRead then date=dateRead end;local rank={level=0,potentialLevel=0,experience=0};local rankOK,rankRead=pcall(company);if rankOK and rankRead then rank=rankRead end
+ local cam={};local cameraOK,cameraRead=pcall(cameraData);if cameraOK and finite(cameraRead.x) and finite(cameraRead.y) then cam=cameraRead end;local world=component(w,CT.WORLD)
+ return json({playing=true,player=player,world=w,nameScope=S.nameScope,balance=a.balance,loan=a.loan,rank=rank.level,potentialRank=rank.potentialLevel,experience=rank.experience,date=string.format('%04d-%02d-%02d',date.year,date.month,date.day),dateNumber=date.year*10000+date.month*100+date.day,dayLength=gs.millisPerDay,speed=gs.speedup,daytime=gt.timeOfDaySec/3600,clouds=world and world.cloudCoverage or nil,settings=S.settings,capabilities=S.capabilities,catalog=S.catalog,stocks=S.stocks,worlds=S.worlds,tasks=S.tasks,camera=cam,renameResult=S.renameResult,cargoResult=S.cargoResult,message=S.lastMessage,error=S.lastError,diagnostics={version=S.version,protocol=S.protocol,commands=S.commandCount,backups=(function()local n=0;for k in pairs(S.backups)do n=n+1 end;return n end)()}})
 end
 rawset(_G,'__SZTF3F6',S)
 return '{}'
