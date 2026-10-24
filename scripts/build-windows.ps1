@@ -26,13 +26,14 @@ $runtimeName = "TransportFever3Runtime_v$protocol.dll"
 $luaName = "功能接口v$protocol.lua"
 $packageName = "TransportFever3Modifier-v$version-windows-x64"
 $zipPath = Join-Path $OutputDirectory ($packageName + '.zip')
-if (Test-Path -LiteralPath $zipPath) {
-    throw '同名 ZIP 已存在；请移走旧产物或指定新的 -OutputDirectory。'
+if ((Test-Path -LiteralPath $zipPath) -or (Test-Path -LiteralPath ($zipPath + '.sha256'))) {
+    throw '同名 ZIP 或校验文件已存在；请移走旧产物或指定新的 -OutputDirectory。'
 }
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 $stage = Join-Path $OutputDirectory ('stage-' + [Guid]::NewGuid().ToString('N'))
 $buildRoot = Join-Path $stage 'compiled'
 $packageRoot = Join-Path $stage $packageName
+$stagedZipPath = Join-Path $stage ($packageName + '.zip')
 
 function Assert-X64Pe([string]$Path) {
     $bytes = [IO.File]::ReadAllBytes($Path)
@@ -87,7 +88,12 @@ try {
             if (Test-Path -LiteralPath $layoutReport) { Write-Host ([IO.File]::ReadAllText($layoutReport)) }
             throw '离线界面布局检查未通过。'
         }
-        $layoutChecks = @([IO.File]::ReadAllText($layoutReport) | ConvertFrom-Json)
+        # Windows PowerShell 5.1 emits a JSON array as one pipeline object.
+        # Enumerate its rows before counting or checking individual results.
+        $layoutChecks = @([IO.File]::ReadAllText($layoutReport) | ConvertFrom-Json | ForEach-Object { $_ })
+        if ($layoutChecks.Count -eq 0 -or @($layoutChecks | Where-Object { $_.pass -ne $true }).Count -gt 0) {
+            throw '离线布局报告为空或包含失败项。'
+        }
         Write-Host ('离线布局检查通过：' + $layoutChecks.Count + ' 项；未连接游戏。')
     } finally { $check.Dispose() }
 
@@ -128,19 +134,36 @@ try {
 
     Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
-    [IO.Compression.ZipFile]::CreateFromDirectory(
-        $packageRoot, $zipPath, [IO.Compression.CompressionLevel]::Optimal, $true, [Text.Encoding]::UTF8)
     $expected = @($records) + @([ordered]@{
         path = '发布清单.json'
         bytes = (Get-Item -LiteralPath $manifestPath).Length
         sha256 = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash
     })
-    $archive = [IO.Compression.ZipFile]::OpenRead($zipPath)
+    # Explicit entry names avoid CreateFromDirectory's legacy backslash paths
+    # under Windows PowerShell 5.1 / .NET Framework compatibility settings.
+    $archive = [IO.Compression.ZipFile]::Open(
+        $stagedZipPath, [IO.Compression.ZipArchiveMode]::Create, [Text.Encoding]::UTF8)
     try {
-        if ($archive.Entries.Count -ne $expected.Count) { throw 'ZIP 文件数量不一致。' }
         foreach ($record in $expected) {
-            $entry = $archive.GetEntry($packageName + '/' + $record.path)
-            if ($null -eq $entry -or $entry.Length -ne $record.bytes) { throw 'ZIP 内容不完整。' }
+            $entryName = $packageName + '/' + $record.path
+            [IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                $archive, (Join-Path $packageRoot $record.path), $entryName,
+                [IO.Compression.CompressionLevel]::Optimal) | Out-Null
+        }
+    } finally { $archive.Dispose() }
+
+    $archive = [IO.Compression.ZipFile]::OpenRead($stagedZipPath)
+    try {
+        if ($archive.Entries.Count -ne $expected.Count) {
+            throw ('ZIP 文件数量不一致：应为 {0}，实际为 {1}。' -f $expected.Count, $archive.Entries.Count)
+        }
+        foreach ($record in $expected) {
+            $entryName = $packageName + '/' + $record.path
+            $entry = $archive.GetEntry($entryName)
+            if ($null -eq $entry) { throw ('ZIP 缺少文件：' + $entryName) }
+            if ($entry.Length -ne $record.bytes) {
+                throw ('ZIP 文件大小不一致：{0}；应为 {1} 字节，实际为 {2} 字节。' -f $entryName, $record.bytes, $entry.Length)
+            }
             $inputStream = $entry.Open()
             $hasher = [Security.Cryptography.SHA256]::Create()
             try {
@@ -153,8 +176,12 @@ try {
         }
     } finally { $archive.Dispose() }
 
-    $zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    [IO.File]::WriteAllText(($zipPath + '.sha256'), ($zipHash + '  ' + [IO.Path]::GetFileName($zipPath) + "`n"), [Text.Encoding]::ASCII)
+    $zipHash = (Get-FileHash -LiteralPath $stagedZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    [IO.File]::WriteAllText(($stagedZipPath + '.sha256'), ($zipHash + '  ' + [IO.Path]::GetFileName($zipPath) + "`n"), [Text.Encoding]::ASCII)
+    # Failed checks leave no ZIP in the output directory. Only publish the
+    # validated archive and its checksum; the temporary stage is always removed.
+    Move-Item -LiteralPath $stagedZipPath -Destination $zipPath
+    Move-Item -LiteralPath ($stagedZipPath + '.sha256') -Destination ($zipPath + '.sha256')
     Write-Host ('便携包：' + $zipPath)
     Write-Host ('SHA-256：' + $zipHash)
     if ($env:GITHUB_STEP_SUMMARY) {
