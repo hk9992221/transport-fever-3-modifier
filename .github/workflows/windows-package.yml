@@ -1,18 +1,18 @@
-name: Windows x64 手动打包
+name: Windows x64 手动发布
 
 on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: windows-package-${{ github.ref }}
+  group: windows-release
   cancel-in-progress: false
 
 jobs:
   package:
-    name: 编译并打包 Windows x64
+    name: 编译并发布 Windows x64
     runs-on: windows-2022
     timeout-minutes: 20
     defaults:
@@ -45,13 +45,60 @@ jobs:
       - name: 编译、检查并生成便携包
         run: ./scripts/build-windows.ps1
 
-      - name: 上传便携包与校验文件
-        uses: actions/upload-artifact@v7
-        with:
-          name: TransportFever3Modifier-Windows-x64
-          path: |
-            dist/*.zip
-            dist/*.sha256
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 7
+      - name: 发布到 GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = [IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'src/Common.cs'))
+          $match = [regex]::Match($source, '\bVersion\s*=\s*"(?<value>\d+\.\d+\.\d+)"')
+          if (-not $match.Success) { throw '无法从源码读取发布版本。' }
+          $version = $match.Groups['value'].Value
+          $tag = 'v' + $version
+          $zip = Join-Path $env:GITHUB_WORKSPACE "dist/TransportFever3Modifier-v$version-windows-x64.zip"
+          $assets = @($zip, ($zip + '.sha256'))
+          foreach ($asset in $assets) {
+            if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) {
+              throw ('缺少发布附件：' + $asset)
+            }
+          }
+          $notes = Join-Path $env:RUNNER_TEMP 'tf3-release-notes.md'
+          @(
+            "Windows x64 便携版 v$version。完整解压 ZIP 后运行其中的主程序。"
+            ''
+            '附件包含便携 ZIP 和 SHA-256 校验文件；运行模块与 Lua 脚本已包含在 ZIP 内。'
+            ''
+            ("源码提交：https://github.com/${env:GH_REPO}/commit/${env:GITHUB_SHA}")
+            ''
+            '构建完成编译、x64 架构、版本、脚本及 ZIP 完整性检查；未运行游戏，不代表游戏功能已实测。'
+          ) | Out-File -FilePath $notes -Encoding utf8
+
+          $tagCommit = & gh api "repos/${env:GH_REPO}/commits/$tag" --jq '.sha' 2>$null
+          $tagExists = $LASTEXITCODE -eq 0
+          if ($tagExists -and $tagCommit -ne $env:GITHUB_SHA) {
+            throw '该版本标签已绑定其他提交；请升级源码版本后重新发布。'
+          }
+          $existingJson = & gh release view $tag --repo $env:GH_REPO --json isDraft,targetCommitish,url 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            $existing = ($existingJson -join "`n") | ConvertFrom-Json
+            if (-not $tagExists) {
+              if (-not $existing.isDraft) { throw '已发布版本缺少标签，请先检查 Releases。' }
+              $commitRef = $existing.targetCommitish
+              $targetCommit = & gh api "repos/${env:GH_REPO}/commits/$commitRef" --jq '.sha'
+              if ($LASTEXITCODE -ne 0 -or $targetCommit -ne $env:GITHUB_SHA) {
+                throw '该版本草稿已绑定其他提交；请升级源码版本后重新发布。'
+              }
+            }
+            & gh release upload $tag @assets --repo $env:GH_REPO --clobber
+            if ($LASTEXITCODE -ne 0) { throw 'Release 附件上传失败。' }
+          } else {
+            & gh release create $tag @assets --repo $env:GH_REPO --draft --target $env:GITHUB_SHA --title "v$version - Windows x64" --notes-file $notes
+            if ($LASTEXITCODE -ne 0) { throw 'Release 草稿创建或附件上传失败。' }
+          }
+          & gh release edit $tag --repo $env:GH_REPO --draft=false --latest --target $env:GITHUB_SHA --title "v$version - Windows x64" --notes-file $notes
+          if ($LASTEXITCODE -ne 0) { throw 'Release 发布失败。' }
+          $url = & gh release view $tag --repo $env:GH_REPO --json url --jq '.url'
+          if ($LASTEXITCODE -ne 0) { throw '无法读取 Release 地址。' }
+          Write-Host ('Release：' + $url)
+          @('', '## GitHub Release', '', $url) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
