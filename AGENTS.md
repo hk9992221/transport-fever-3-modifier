@@ -6,7 +6,9 @@
 - `origin` is `git@github.com:hk9992221/transport-fever-3-modifier.git`.
 - Local configuration uses `core.sshCommand = ssh -i C:/Users/chk/.ssh/gugegithub -o IdentitiesOnly=yes`.
 - The key authenticates as GitHub account `roobooo`; that account is a collaborator on this repository.
-- Create PRs for this repository as `roobooo` using the token in the ignored `token.txt`. Keep credentials project-local (`credential.helper = store --file=.git/credentials`); do not change the global GitHub account.
+- 本项目的 PR 创建、PR 评论与审查发布，都必须使用 `token.txt` 里的 token（`roobooo`），不要用 `hk9992221` 的 token 创建 PR。
+- `token.txt` 只放在本地且已被 `.gitignore` 忽略，绝不提交到仓库。
+- 凭据保持项目本地（`credential.helper = store --file=.git/credentials`）；不要改动全局 GitHub 账号或全局凭据。
 
 ## Verification
 

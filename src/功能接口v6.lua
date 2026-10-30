@@ -454,7 +454,7 @@ local function readTownNeeds(town)
    end
   else invalid=true end
  end
- if not sawEntries or (parsed and not invalid) then return needs,'verified' end
+ if not sawEntries or not invalid then return needs,'verified' end
  if parsed then return needs,'partial' end
  return needs,'unread'
 end

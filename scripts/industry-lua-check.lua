@@ -332,4 +332,22 @@ do
     expect(town.districtStatus ~= "complete", "unreadable userdata vector was accepted")
 end
 
+-- 7. Empty outer demand table and readable-but-empty demand districts are valid.
+do
+    local S, mock = load({ count = 2, towns = 1 })
+    local town = mock.engine.getComponent(2001, mock.type.ComponentType.TOWN)
+    town.cargoNeeds = {}
+    fetchPart(S, "industry"); fetchPart(S, "town"); fetchPart(S, "cargo")
+    expect(S.industryIndex.towns[1].needsStatus == "verified", "empty outer demand table was marked unread")
+    expect(S.industryIndex.complete == true, "empty outer demand table made the index incomplete")
+
+    S, mock = load({ count = 2, towns = 1 })
+    town = mock.engine.getComponent(2001, mock.type.ComponentType.TOWN)
+    town.cargoNeeds = { {}, {}, {} }
+    fetchPart(S, "industry"); fetchPart(S, "town"); fetchPart(S, "cargo")
+    expect(S.industryIndex.towns[1].needsStatus == "verified", "valid empty demand districts were marked unread")
+    expect(S.industryIndex.unreadTownCount == 0, "valid empty demand districts added a pending town")
+    expect(S.industryIndex.complete == true, "valid empty demand districts made the index incomplete")
+end
+
 print("INDUSTRY_LUA_CHECK_OK")
