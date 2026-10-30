@@ -16,7 +16,7 @@ concurrency:
 jobs:
   lua-check:
     name: Lua 适配层回归
-    runs-on: windows-2022
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: 获取源码
@@ -27,30 +27,25 @@ jobs:
       # The check runs on a real Lua 5.4 interpreter, not on a JavaScript
       # emulation, because the adapter relies on the Lua 5.4 standard library
       # and on the table iteration semantics of the game runtime.
-      - name: 准备 C 编译环境
-        uses: step-security/msvc-dev-cmd@v1
-
       - name: 安装 Lua 5.4
         uses: leafo/gh-actions-lua@v13
         with:
           luaVersion: '5.4.6'
 
       - name: 运行产业适配层回归
-        shell: pwsh
+        shell: bash
         run: |
-          $ErrorActionPreference = 'Stop'
-          $lua = Get-Command lua -ErrorAction SilentlyContinue
-          if (-not $lua) { throw '未找到 Lua 解释器。' }
-          & $lua.Source -v
-          & $lua.Source scripts/industry-lua-check.lua src/功能接口v6.lua
-          if ($LASTEXITCODE -ne 0) { throw '产业适配层回归未通过。' }
+          set -euo pipefail
+          lua -v
+          lua scripts/industry-lua-check.lua src/功能接口v6.lua
           # The check must fail against the previous implementation, otherwise
           # it does not actually guard the defect it was written for.
-          $baseline = Join-Path $env:RUNNER_TEMP 'baseline.lua'
-          git show "origin/${{ github.event.repository.default_branch }}:src/功能接口v6.lua" |
-            Out-File -FilePath $baseline -Encoding utf8
-          if ((Get-Item -LiteralPath $baseline).Length -gt 0) {
-            & $lua.Source scripts/industry-lua-check.lua $baseline
-            if ($LASTEXITCODE -eq 0) { throw '回归用例在基线实现上没有失败，用例无法捕获该缺陷。' }
-            Write-Host '回归用例在基线实现上按预期失败。'
-          }
+          baseline=$(mktemp)
+          git show "origin/${{ github.event.repository.default_branch }}:src/功能接口v6.lua" > "$baseline"
+          if [ -s "$baseline" ]; then
+            if lua scripts/industry-lua-check.lua "$baseline"; then
+              echo "::error::回归用例在基线实现上没有失败，用例无法捕获该缺陷。"
+              exit 1
+            fi
+            echo "回归用例在基线实现上按预期失败。"
+          fi
