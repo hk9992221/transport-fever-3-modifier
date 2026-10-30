@@ -5,7 +5,8 @@
 - Use the SSH key `C:\Users\chk\.ssh\gugegithub` for this repository.
 - `origin` is `git@github.com:hk9992221/transport-fever-3-modifier.git`.
 - Local configuration uses `core.sshCommand = ssh -i C:/Users/chk/.ssh/gugegithub -o IdentitiesOnly=yes`.
-- The key currently authenticates as GitHub account `roobooo`; that account must be granted access to this repository. If SSH returns `Repository not found`, use the repo's HTTPS credential for the push.
+- The key authenticates as GitHub account `roobooo`; that account is a collaborator on this repository.
+- Create PRs for this repository as `roobooo` using the token in the ignored `token.txt`. Keep credentials project-local (`credential.helper = store --file=.git/credentials`); do not change the global GitHub account.
 
 ## Verification
 
