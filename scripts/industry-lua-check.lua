@@ -168,6 +168,8 @@ local function makeMock(opts)
 end
 
 local function makeNativeVector()
+    -- Lua 5.4 returns a file userdata; fengari lacks io.tmpfile, so a thread
+    -- provides the same non-table field-access path for local runs.
     if io.tmpfile then return io.tmpfile(), true end
     return coroutine.create(function() end), false
 end
