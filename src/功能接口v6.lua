@@ -73,14 +73,81 @@ local function funcs(list) for _,p in ipairs(list) do need(isCallable(path(p)),'
 local function fields(c,list,label)
  need(c~=nil,'未找到组件 '..label);for _,p in ipairs(list) do local v=c;for part in p:gmatch('[^.]+') do local ok,x=pcall(function()return v[part] end);need(ok,'字段不可读 '..label..'.'..p);v=x end;need(finite(v),'字段类型未通过 '..label..'.'..p) end
 end
+local function cameraCenter()
+ local camera=api and api.gui and api.gui.camera
+ local getter=camera and camera.getCenter
+ need(isCallable(getter),'镜头中心读取接口不可用或未通过验证')
+ local position=getter();fields(position,{'x','y'},'镜头中心');return {x=position.x,y=position.y}
+end
+local function cameraValue()
+ local camera=api and api.gui and api.gui.camera
+ local getter=camera and camera.getCameraData
+ if not isCallable(getter) then return nil,'镜头读取接口不可用或未通过验证' end
+ local ok,value=pcall(getter)
+ if not ok or value==nil then return nil,tostring(value):gsub('^.-:%d+: ','') end
+ local xOK,x=pcall(function()return value.x end);local yOK,y=pcall(function()return value.y end)
+ if not (xOK and yOK and finite(x) and finite(y)) then return nil,'镜头数据缺少有效的中心坐标' end
+ local data={x=x,y=y}
+ local function part(name)local partOK,n=pcall(function()return value[name] end);if partOK and finite(n) then return n end end
+ data.z=part('z');data.w=part('w');local pitch=part('q');if pitch==nil then pitch=part('v') end;data.v=pitch
+ return data
+end
 local function cameraData()
- funcs({'api.gui.camera.getCameraData'});local v=api.gui.camera.getCameraData();fields(v,{'x','y'},'镜头中心')
- local data={x=v.x,y=v.y};for source,target in pairs({z='z',w='w',q='v'}) do local ok,n=pcall(function()return v[source] end);if ok and finite(n) then data[target]=n end end;return data
+ local data,why=cameraValue()
+ if data then return data end
+ -- getCameraData can fail transiently (loading, pause menu, follow camera)
+ -- while getCenter still returns the look-at position. Keep the center so
+ -- inventory recommendation and retries remain usable.
+ local ok,center=pcall(cameraCenter)
+ if ok then return center end
+ error((why and why..'；' or '')..tostring(center):gsub('^.-:%d+: ',''),0)
+end
+local function cameraPose()
+ local data=cameraData();fields(data,{'x','y','z','w','v'},'完整镜头');return data
+end
+local function completeCamera(v)
+ return type(v)=='table' and finite(v.x) and finite(v.y) and finite(v.z) and finite(v.w) and finite(v.v)
 end
 local function readCamera()
- local ok,value=pcall(cameraData)
- S.camera=ok and value or {};S.cameraError=ok and '' or tostring(value):gsub('^.-:%d+: ','');S.cameraAt=ok and now() or nil
- return S.camera
+ local value,why
+ -- Retry the full API before degrading to center-only data so a transient
+ -- frame cannot drop distance, rotation and pitch.
+ for attempt=1,3 do
+  local sample,reason=cameraValue()
+  if sample then
+   value=sample;if completeCamera(sample) then break end
+  else
+   why=reason
+  end
+ end
+ if not value then
+  local ok,center=pcall(cameraCenter)
+  if ok then value=center
+  else why=(why and why..'；' or '')..tostring(center):gsub('^.-:%d+: ','') end
+ end
+ local readOK=value~=nil
+ local sameMap=S.cameraWorld==S.world
+ if not sameMap then S.previousCamera=nil;S.cameraWorld=S.world end
+ if readOK then
+  if completeCamera(value) then
+   S.camera=value;S.cameraError='';S.cameraAt=now();S.cameraFresh=true
+  elseif sameMap and completeCamera(S.camera) then
+   -- Keep the last complete pose while adopting a fresh center. The pose is
+   -- not current, so mark it stale and let the UI require a retry before
+   -- applying or saving it.
+   S.camera={x=value.x,y=value.y,z=S.camera.z,w=S.camera.w,v=S.camera.v}
+   S.cameraError='完整镜头参数暂未返回，显示上次成功的距离、旋转与俯仰'
+   S.cameraAt=now();S.cameraFresh=false
+  else
+   S.camera=value;S.cameraError='';S.cameraAt=now();S.cameraFresh=false
+  end
+ else
+  S.cameraError=tostring(why):gsub('^.-:%d+: ','');S.cameraFresh=false
+  -- A single failed sample must not erase the last good pose. Clear it only
+  -- when the map/player changed so data from another map cannot be reused.
+  if not sameMap then S.camera={};S.cameraAt=nil end
+ end
+ return S.camera,readOK
 end
 local function cmd(p) funcs({'api.cmd.sendCommand','api.cmd.'..p}) end
 local function cap(id,test)
@@ -356,12 +423,13 @@ function S.dispatch(c)
  refreshCapabilities();if c.op~='reset' and c.op~='refresh' and c.op~='camera_read' and not (c.op=='set' and not c.enabled) then requireCap(c.op=='set' and c.id or c.op) end
  S.lastError='';S.lastMessage='命令已提交'
  if c.op=='camera_read' then
- assert(tonumber(c.world)==S.world and api.engine.util.getWorld()==S.world and api.engine.util.getPlayer()==S.player,'地图或连接已切换，请重新读取镜头')
+ assert(c.world==nil or tonumber(c.world)==S.world,'地图或连接已切换，请重新读取镜头')
+ assert(api.engine.util.getWorld()==S.world and api.engine.util.getPlayer()==S.player,'地图或连接已切换，请重新读取镜头')
  assert(type(c.request)=='string' and #c.request>0 and #c.request<=80,'镜头请求标识无效')
- local cam=readCamera();assert(finite(cam.x) and finite(cam.y),S.cameraError)
+ local cam,fresh=readCamera();assert(fresh,S.cameraError)
  if c.refreshStocks then S.stocks=stockOptions() end
  S.lastMessage=c.refreshStocks and '已读取当前镜头并刷新库存位置' or '已读取当前镜头'
- return json({ok=true,request=c.request,world=S.world,nameScope=S.nameScope,camera=cam,cameraAt=S.cameraAt,stocks=c.refreshStocks and S.stocks or nil,message=S.lastMessage})
+ return json({ok=true,request=c.request,world=S.world,nameScope=S.nameScope,camera=cam,cameraAt=S.cameraAt,cameraFresh=S.cameraFresh,stocks=c.refreshStocks and S.stocks or nil,message=S.lastMessage})
  elseif c.op=='read' then return S.tick(true) elseif c.op=='reset' then restoreAll();S.lastMessage='已关闭持续功能并提交恢复命令'
  elseif c.op=='set' then
  need(continuous[c.id],'未知持续功能');local value=tonumber(c.value) or 1;assert(value==value and value>=.05 and value<=100,'倍率应在 0.05–100 之间');if c.id=='simulation_speed' then need(value==math.floor(value),'模拟速度倍率必须为整数') end;S.settings[c.id]=c.enabled and value or nil
@@ -387,9 +455,9 @@ function S.dispatch(c)
  elseif c.op=='rename_entity' then renameEntity(c)
  elseif c.op=='town_capacity' then local e=tonumber(c.id);assert(component(e,CT.TOWN),'城镇已不存在');local v={c.res,c.commercial,c.industry};for _,n in ipairs(v) do assert(n>=1 and n<=100000,'容量应在 1–100000 之间') end;send(api.cmd.makeTownSetInitialLandUseCapacitiesCmd(e,v));S.nextScan=0
  elseif c.op=='industry_value' then local e=tonumber(c.id);local ind=component(e,CT.INDUSTRY);assert(ind,'产业已不存在');assert(c.value>=.05 and c.value<=100,'倍率应在 0.05–100 之间');local m=api.type.StockList.Modifiers.new();m.productivity=c.value;send(api.cmd.makeStockListSetModifiersCmd(ind.stockList,m));S.nextScan=0
- elseif c.op=='focus' then S.previousCamera=cameraData();api.gui.camera.focusEntity(tonumber(c.id));S.lastMessage='已定位镜头'
- elseif c.op=='camera' then S.previousCamera=cameraData();local v=api.type.Vec5f.new(c.x,c.y,c.z,c.w,c.v);api.gui.camera.setCameraData(v);S.lastMessage='已设置镜头'
- elseif c.op=='return' then assert(S.previousCamera,'还没有记录上一镜头位置');local v=S.previousCamera;S.previousCamera=cameraData();api.gui.camera.setCameraData(api.type.Vec5f.new(v.x,v.y,v.z,v.w,v.v));S.lastMessage='已返回上一镜头位置'
+ elseif c.op=='focus' then S.previousCamera=cameraPose();api.gui.camera.focusEntity(tonumber(c.id));S.lastMessage='已定位镜头'
+ elseif c.op=='camera' then S.previousCamera=cameraPose();local v=api.type.Vec5f.new(c.x,c.y,c.z,c.w,c.v);api.gui.camera.setCameraData(v);S.lastMessage='已设置镜头'
+ elseif c.op=='return' then assert(S.previousCamera,'还没有记录上一镜头位置');local v=S.previousCamera;S.previousCamera=cameraPose();api.gui.camera.setCameraData(api.type.Vec5f.new(v.x,v.y,v.z,v.w,v.v));S.lastMessage='已返回上一镜头位置'
  elseif c.op=='refresh' then S.nextScan=0;scan();S.lastMessage='已刷新地图目录'
  else error('未知操作：'..tostring(c.op)) end
  return json({ok=true,message=S.lastMessage})
@@ -397,8 +465,8 @@ end
 function S.tick(active)
  local coreOK,coreError=pcall(function()funcs({'api.engine.entityExists','api.engine.getComponent','api.engine.getEntitiesWithComponent','api.engine.util.getPlayer','api.engine.util.getWorld','api.util.getApplicationTime'}) end);if not coreOK then return json({playing=false,settings={},capabilities={},message='等待地图核心接口验证',error=tostring(coreError)}) end
  local ok,player=pcall(api.engine.util.getPlayer);local w=api.engine.util.getWorld();local a=ok and component(player,CT.ACCOUNT)
- if not a then S.settings={};S.backups={};S.jobs={};S.speedBackup=nil;S.pendingFinance=nil;S.renameResult=nil;S.cargoResult=nil;S.catalog=arr();S.stocks=arr();S.worlds=arr();S.nameScope=nil;S.player=nil;return json({playing=false,settings={},capabilities=S.capabilities,message='请进入可运行地图'}) end
- if S.player and (S.player~=player or S.world~=w) then S.settings={};S.backups={};S.jobs={};S.speedBackup=nil;S.renameResult=nil;S.cargoResult=nil;S.catalog=arr();S.stocks=arr();S.worlds=arr();S.nameScope=nil;S.nextScan=0;S.nextCapability=0 end
+ if not a then S.settings={};S.backups={};S.jobs={};S.speedBackup=nil;S.pendingFinance=nil;S.renameResult=nil;S.cargoResult=nil;S.catalog=arr();S.stocks=arr();S.worlds=arr();S.nameScope=nil;S.player=nil;S.camera={};S.cameraError='';S.cameraAt=nil;S.cameraFresh=false;S.cameraWorld=nil;S.previousCamera=nil;return json({playing=false,settings={},capabilities=S.capabilities,message='请进入可运行地图'}) end
+ if S.player and (S.player~=player or S.world~=w) then S.settings={};S.backups={};S.jobs={};S.speedBackup=nil;S.renameResult=nil;S.cargoResult=nil;S.catalog=arr();S.stocks=arr();S.worlds=arr();S.nameScope=nil;S.nextScan=0;S.nextCapability=0;S.camera={};S.cameraError='';S.cameraAt=nil;S.cameraFresh=false;S.cameraWorld=nil;S.previousCamera=nil end
  S.player=player;S.world=w
  if not S.nameScope then S.nameScope=string.format('%.9f:%s',now(),tostring(w)) end
  local baseOK,baseError=pcall(function()fields(a,{'balance','loan'},'ACCOUNT');fields(component(w,CT.GAME_TIME),{'gameTime','timeOfDaySec'},'GAME_TIME');fields(component(w,CT.GAME_SPEED),{'millisPerDay','speedup'},'GAME_SPEED') end);if not baseOK then return json({playing=false,settings={},capabilities={},message='当前地图组件尚未通过验证',error=tostring(baseError)}) end
@@ -423,7 +491,7 @@ function S.tick(active)
  if t>=S.nextScan then local success,err=pcall(scan);if not success then S.lastError=tostring(err);S.nextScan=t+3 end end
  local date={year=0,month=0,day=0};local dateOK,dateRead=pcall(function()return api.engine.util.getCalendarDate(gt.gameTime) end);if dateOK and dateRead then date=dateRead end;local rank={level=0,potentialLevel=0,experience=0};local rankOK,rankRead=pcall(company);if rankOK and rankRead then rank=rankRead end
  local cam=readCamera();local world=component(w,CT.WORLD)
- return json({playing=true,player=player,world=w,nameScope=S.nameScope,balance=a.balance,loan=a.loan,rank=rank.level,potentialRank=rank.potentialLevel,experience=rank.experience,date=string.format('%04d-%02d-%02d',date.year,date.month,date.day),dateNumber=date.year*10000+date.month*100+date.day,dayLength=gs.millisPerDay,speed=gs.speedup,daytime=gt.timeOfDaySec/3600,clouds=world and world.cloudCoverage or nil,settings=S.settings,capabilities=S.capabilities,catalog=S.catalog,stocks=S.stocks,worlds=S.worlds,tasks=S.tasks,camera=cam,cameraError=S.cameraError,cameraAt=S.cameraAt,renameResult=S.renameResult,cargoResult=S.cargoResult,message=S.lastMessage,error=S.lastError,diagnostics={version=S.version,protocol=S.protocol,commands=S.commandCount,backups=(function()local n=0;for k in pairs(S.backups)do n=n+1 end;return n end)()}})
+ return json({playing=true,player=player,world=w,nameScope=S.nameScope,balance=a.balance,loan=a.loan,rank=rank.level,potentialRank=rank.potentialLevel,experience=rank.experience,date=string.format('%04d-%02d-%02d',date.year,date.month,date.day),dateNumber=date.year*10000+date.month*100+date.day,dayLength=gs.millisPerDay,speed=gs.speedup,daytime=gt.timeOfDaySec/3600,clouds=world and world.cloudCoverage or nil,settings=S.settings,capabilities=S.capabilities,catalog=S.catalog,stocks=S.stocks,worlds=S.worlds,tasks=S.tasks,camera=cam,cameraError=S.cameraError,cameraAt=S.cameraAt,cameraFresh=S.cameraFresh,renameResult=S.renameResult,cargoResult=S.cargoResult,message=S.lastMessage,error=S.lastError,diagnostics={version=S.version,protocol=S.protocol,commands=S.commandCount,backups=(function()local n=0;for k in pairs(S.backups)do n=n+1 end;return n end)()}})
 end
 rawset(_G,'__SZTF3F6',S)
 return '{}'

@@ -273,10 +273,11 @@ namespace TransportFever3Trainer
                     {
                         var reply = CameraData.ReadReply(Data.Json.DeserializeObject(bridge.Response), request, world, map, refreshStocks);
                         State["camera"] = Data.Get(reply, "camera"); State["cameraError"] = ""; State["cameraAt"] = Data.Get(reply, "cameraAt");
+                        State["cameraFresh"] = Data.Bool(reply, "cameraFresh");
                         if (refreshStocks) State["stocks"] = Data.Get(reply, "stocks");
                     }
                     catch (Exception e) { success = false; message = e.Message; }
-                    if (!success) { State["camera"] = new Dictionary<string, object>(); State["cameraAt"] = null; State["cameraError"] = message; Notify(message, true); }
+                    if (!success) { State["camera"] = new Dictionary<string, object>(); State["cameraAt"] = null; State["cameraError"] = message; State["cameraFresh"] = false; Notify(message, true); }
                     // The command reply is current even when the periodic shared
                     // snapshot has not ticked yet. Apply it before calculating.
                     UpdateState(); if (completed != null) completed(success, message);
@@ -310,7 +311,17 @@ namespace TransportFever3Trainer
                 bridge.Poll();
                 if (lastSnapshot != bridge.Snapshot)
                 {
-                    lastSnapshot = bridge.Snapshot; State = Data.Obj(Data.Json.DeserializeObject(lastSnapshot));
+                    lastSnapshot = bridge.Snapshot;
+                    string previousScope = Data.Str(State, "nameScope");
+                    var previousCamera = Data.Get(State, "camera");
+                    double previousCameraAt = Data.Num(State, "cameraAt", double.NaN);
+                    string previousCameraError = Data.Str(State, "cameraError");
+                    bool previousCameraFresh = Data.Bool(State, "cameraFresh");
+                    State = Data.Obj(Data.Json.DeserializeObject(lastSnapshot));
+                    // The periodic snapshot may have been produced before a direct camera reply,
+                    // or after a transient read failure. Keep the newer valid sample for this map
+                    // so an older or empty snapshot cannot clear a freshly read pose.
+                    CameraData.MergeSnapshot(State, previousScope, previousCamera, previousCameraAt, previousCameraError, previousCameraFresh);
                     string runtimeVersion = Data.Str(Data.Get(State, "diagnostics"), "version");
                     if (runtimeVersion.Length > 0 && runtimeVersion != Protocol.Version)
                         throw new InvalidOperationException("旧版运行模块仍在游戏进程中，请完全退出游戏后重新连接。");
@@ -459,6 +470,20 @@ namespace TransportFever3Trainer
                 staleBlocked = false; try { CameraData.ReadReply(cameraReply, "camera-test", "2", "layout", true); } catch (InvalidDataException) { staleBlocked = true; }
                 if (!staleBlocked) throw new Exception("其他地图的镜头回复未被拒绝");
                 report.Add(new { cameraRead = "correlated response, current map, center versus pose", pass = true });
+                var keptCamera = Data.Json.DeserializeObject("{\"x\":10,\"y\":20,\"z\":30,\"w\":0,\"v\":1}");
+                var failedSnapshot = Data.Obj(Data.Json.DeserializeObject("{\"nameScope\":\"layout\",\"camera\":{\"x\":1,\"y\":2},\"cameraError\":\"读取失败\",\"cameraFresh\":false}"));
+                CameraData.MergeSnapshot(failedSnapshot, "layout", keptCamera, 20, "", true);
+                if (Data.Num(Data.Get(failedSnapshot, "camera"), "z") != 30 || Data.Bool(failedSnapshot, "cameraFresh")) throw new Exception("失败的自动镜头读取清除了已读取的镜头");
+                var olderSnapshot = Data.Obj(Data.Json.DeserializeObject("{\"nameScope\":\"layout\",\"camera\":{\"x\":1,\"y\":2,\"z\":3,\"w\":0,\"v\":1},\"cameraAt\":10,\"cameraFresh\":true}"));
+                CameraData.MergeSnapshot(olderSnapshot, "layout", keptCamera, 20, "", true);
+                if (Data.Num(Data.Get(olderSnapshot, "camera"), "z") != 30 || !Data.Bool(olderSnapshot, "cameraFresh")) throw new Exception("较旧的自动快照覆盖了新的镜头读取");
+                var newerSnapshot = Data.Obj(Data.Json.DeserializeObject("{\"nameScope\":\"layout\",\"camera\":{\"x\":1,\"y\":2,\"z\":3,\"w\":0,\"v\":1},\"cameraAt\":30,\"cameraFresh\":true}"));
+                CameraData.MergeSnapshot(newerSnapshot, "layout", keptCamera, 20, "", true);
+                if (Data.Num(Data.Get(newerSnapshot, "camera"), "z") != 3) throw new Exception("较新的自动快照未被采用");
+                var otherMapSnapshot = Data.Obj(Data.Json.DeserializeObject("{\"nameScope\":\"other\",\"camera\":{\"x\":1,\"y\":2},\"cameraFresh\":false}"));
+                CameraData.MergeSnapshot(otherMapSnapshot, "layout", keptCamera, 20, "", true);
+                if (Data.Num(Data.Get(otherMapSnapshot, "camera"), "z", -1) != -1 || Data.Num(Data.Get(otherMapSnapshot, "camera"), "x") != 1) throw new Exception("跨地图镜头数据被错误保留");
+                report.Add(new { cameraMerge = "retain fresh pose, reject older/empty samples, map isolated", pass = true });
                 var preview = new { playing = true, world = 1, nameScope = "layout", camera = new { x = 0, y = 0, z = 500, w = 0, v = 1 }, catalog = new[] { new { id = "1", name = "原油", category = "货物", description = "货物示例" }, new { id = "2", name = "木材", category = "货物", description = "货物示例" } },
                     worlds = new object[] { new { id = "20", name = "北港采油平台", gameName = "北港采油平台", category = "产业", productivity = 1, description = "产业名称读取示例" },
                         new { id = "21", name = "新港", gameName = "新港", category = "城镇", res = 500, commercial = 200, industry = 200, description = "城镇示例" },

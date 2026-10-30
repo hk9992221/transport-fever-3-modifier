@@ -103,7 +103,10 @@ namespace TransportFever3Trainer
             if (reading) return; string scope = form.NameScope; reading = true; UpdateState();
             form.ReadCamera(false, delegate(bool success, string message) {
                 if (scope != form.NameScope) return; reading = false;
-                if (success && CameraData.HasPose(Data.Get(form.State, "camera"))) { LoadValues(); if (after != null) after(); }
+                var camera = Data.Get(form.State, "camera");
+                bool pose = CameraData.HasPose(camera), fresh = Data.Bool(form.State, "cameraFresh");
+                if (success && pose && fresh) { LoadValues(); if (after != null) after(); }
+                else if (success && pose) { LoadValues(); form.Notify("已读取镜头中心；距离、旋转或俯仰参数暂未更新，当前显示上次成功的数据，请重试后再应用或保存。", true); }
                 else form.Notify(success ? "已读到镜头中心，但完整镜头参数不可用。" : "读取当前镜头失败：" + message, true);
                 UpdateState();
             });
@@ -123,13 +126,18 @@ namespace TransportFever3Trainer
         {
             bool online = form.CaptureReady && !form.Busy;
             string world = form.NameScope; if (world != lastWorld) { loaded = reading = false; lastWorld = world; }
-            bool pose = CameraData.HasPose(Data.Get(form.State, "camera"));
-            MainForm.Enable(read, online && !reading); MainForm.Enable(apply, online && loaded && pose && form.IsAvailable("camera"));
+            var current = Data.Get(form.State, "camera"); bool pose = CameraData.HasPose(current), center = CameraData.HasCenter(current);
+            bool fresh = Data.Bool(form.State, "cameraFresh"); string error = Data.Str(form.State, "cameraError");
+            MainForm.Enable(read, online && !reading); MainForm.Enable(apply, online && loaded && pose && fresh && form.IsAvailable("camera"));
             MainForm.Enable(save, online && !reading); MainForm.Enable(back, online && form.IsAvailable("return"));
             MainForm.Enable(jump, online && bookmarks.Items.Count > 0 && form.IsAvailable("camera")); MainForm.Enable(remove, bookmarks.Items.Count > 0);
             if (!loaded && form.CaptureReady) LoadValues();
             read.Text = reading ? "正在读取当前镜头…" : "读取当前镜头";
-            cameraNote.Text = reading ? "正在请求游戏当前镜头数据…" : !form.CaptureReady ? "连接游戏后可读取当前镜头。" : !pose ? CameraData.HasCenter(Data.Get(form.State, "camera")) ? "已读取镜头中心；完整参数暂不可用。" : "点击“读取当前镜头”重试。" + Data.Str(form.State, "cameraError") : "镜头读取与修改分别验证；读取按钮会主动请求游戏。";
+            cameraNote.Text = reading ? "正在请求游戏当前镜头数据…" : !form.CaptureReady ? "连接游戏后可读取当前镜头。"
+                : !center ? "点击“读取当前镜头”重试。" + error
+                : !pose ? "已读取镜头中心；距离、旋转或俯仰参数暂未返回，可点击重试。" + (error.Length > 0 ? " " + error : "")
+                : !fresh ? "最近一次自动读取未成功，当前显示上次成功的镜头数据；可点击重试。" + error
+                : "镜头读取与修改分别验证；读取按钮会主动请求游戏。";
         }
     }
 }

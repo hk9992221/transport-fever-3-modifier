@@ -12,6 +12,18 @@ namespace TransportFever3Trainer
         public static bool HasCenter(object value) { return Finite(value, "x") && Finite(value, "y"); }
         public static bool HasPose(object value)
         { return HasCenter(value) && new[] { "z", "w", "v" }.All(k => Finite(value, k)); }
+        public static void MergeSnapshot(Dictionary<string, object> state, string previousScope, object previousCamera,
+            double previousCameraAt, string previousCameraError, bool previousCameraFresh)
+        {
+            double incomingAt = Data.Num(state, "cameraAt", double.NaN);
+            if (previousScope != Data.Str(state, "nameScope") || !HasCenter(previousCamera)) return;
+            if (!(double.IsNaN(incomingAt) || (!double.IsNaN(previousCameraAt) && previousCameraAt > incomingAt))) return;
+            bool incomingFailed = Data.Str(state, "cameraError").Length > 0;
+            state["camera"] = previousCamera;
+            state["cameraAt"] = double.IsNaN(previousCameraAt) ? null : (object)previousCameraAt;
+            state["cameraFresh"] = incomingFailed ? false : previousCameraFresh;
+            if (!incomingFailed) state["cameraError"] = previousCameraError;
+        }
         public static Dictionary<string, object> ReadReply(object value, string request, string world, string scope, bool stocks)
         {
             var reply = Data.Obj(value);

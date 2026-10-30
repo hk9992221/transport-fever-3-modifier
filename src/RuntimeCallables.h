@@ -53,6 +53,7 @@ static const CallablePath callablePaths[]={
  {"api.engine.util.stock.getStockCargoTypes",{"api","engine","util","stock","getStockCargoTypes",NULL}},
  {"api.gui.camera.focusEntity",{"api","gui","camera","focusEntity",NULL,NULL}},
  {"api.gui.camera.getCameraData",{"api","gui","camera","getCameraData",NULL,NULL}},
+ {"api.gui.camera.getCenter",{"api","gui","camera","getCenter",NULL,NULL}},
  {"api.gui.camera.setCameraData",{"api","gui","camera","setCameraData",NULL,NULL}},
  {"api.res.cargoTypeRep.get",{"api","res","cargoTypeRep","get",NULL,NULL}},
  {"api.res.cargoTypeRep.getAll",{"api","res","cargoTypeRep","getAll",NULL,NULL}},
