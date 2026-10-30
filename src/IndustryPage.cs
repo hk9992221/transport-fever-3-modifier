@@ -916,6 +916,12 @@ namespace TransportFever3Trainer
                 throw new InvalidOperationException("返回上一分析没有恢复筛选、分组或已加载数量。");
             if (resultsScroll.AutoScrollPosition.Y != savedScroll)
                 throw new InvalidOperationException("返回上一分析没有恢复滚动位置。");
+            visibleCount = 2; RebuildResults(true); Arrange(); Application.DoEvents();
+            resultsScroll.AutoScrollPosition = new Point(0, 40); Application.DoEvents();
+            int loadScroll = resultsScroll.AutoScrollPosition.Y;
+            loadMore.PerformClick(); Application.DoEvents();
+            if (loadMore.Visible || rowControls.Count != activeGroup.Total || resultsScroll.AutoScrollPosition.Y != loadScroll)
+                throw new InvalidOperationException("加载更多没有保留滚动位置或完整结果。");
             resumeGroupDirection = "output"; resumeGroupCargo = "2"; resumeVisible = 1000; resumeScrollY = savedScroll;
             pendingIndex = IndustryRelations.Synthetic(); CompleteLoad(); Arrange(); Application.DoEvents();
             if (activeGroup == null || activeGroup.CargoId != "2" || visibleCount < 1000)
