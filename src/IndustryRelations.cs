@@ -62,7 +62,7 @@ namespace TransportFever3Trainer
     {
         public int Revision;
         public bool Complete;
-        public int IndustryCount, TownCount, UnreadIndustryCount, UnreadTownCount;
+        public int IndustryCount, TownCount, CargoCount, UnreadIndustryCount, UnreadTownCount;
         public double GeneratedAt;
         public readonly List<IndustryEntry> Industries = new List<IndustryEntry>();
         public readonly List<TownEntry> Towns = new List<TownEntry>();
@@ -75,7 +75,7 @@ namespace TransportFever3Trainer
         public void Reset()
         {
             Industries.Clear(); Towns.Clear(); CargoNames.Clear();
-            Revision = 0; Complete = false; IndustryCount = TownCount = UnreadIndustryCount = UnreadTownCount = 0; GeneratedAt = 0;
+            Revision = 0; Complete = false; IndustryCount = TownCount = CargoCount = UnreadIndustryCount = UnreadTownCount = 0; GeneratedAt = 0;
         }
     }
 
@@ -129,7 +129,8 @@ namespace TransportFever3Trainer
     {
         public int Revision;
         public bool Complete;
-        public int IndustryCount, TownCount, UnreadIndustryCount, UnreadTownCount, Offset, Total;
+        public string Part = "industry";
+        public int IndustryCount, TownCount, CargoCount, UnreadIndustryCount, UnreadTownCount, Offset, Total;
         public double GeneratedAt;
         public string Message = "";
         public readonly List<IndustryEntry> Items = new List<IndustryEntry>();
@@ -147,8 +148,10 @@ namespace TransportFever3Trainer
             {
                 Revision = (int)Data.Num(catalog, "revision", Data.Num(root, "revision", 0)),
                 Complete = Data.Bool(catalog, "complete"),
+                Part = Data.Str(catalog, "part", "industry"),
                 IndustryCount = (int)Data.Num(catalog, "industryCount"),
                 TownCount = (int)Data.Num(catalog, "townCount"),
+                CargoCount = (int)Data.Num(catalog, "cargoCount"),
                 UnreadIndustryCount = (int)Data.Num(catalog, "unreadIndustryCount"),
                 UnreadTownCount = (int)Data.Num(catalog, "unreadTownCount"),
                 Offset = (int)Data.Num(catalog, "offset"),
@@ -262,17 +265,34 @@ namespace TransportFever3Trainer
 
         public static void Merge(IndustryIndex index, IndustryCatalogPage page)
         {
-            if (page.Offset != index.Industries.Count)
-                throw new InvalidDataException("产业目录分页不连续，请重新读取。");
-            if (page.Offset == 0 && page.Revision != index.Revision)
+            if (page.Part == "town" || page.Part == "cargo")
             {
-                index.Reset(); index.Revision = page.Revision;
+                if (index.Revision != page.Revision) throw new InvalidDataException("产业目录分片版本不一致，请重新读取。");
+                if (page.Part == "town")
+                {
+                    foreach (var town in page.Towns) if (index.Towns.All(t => t.EntityId != town.EntityId)) index.Towns.Add(town);
+                }
+                else
+                {
+                    foreach (var pair in page.CargoNames) index.CargoNames[pair.Key] = pair.Value;
+                }
             }
-            foreach (var entry in page.Items) if (index.Industries.All(e => e.EntityId != entry.EntityId)) index.Industries.Add(entry);
-            foreach (var town in page.Towns) if (index.Towns.All(t => t.EntityId != town.EntityId)) index.Towns.Add(town);
-            foreach (var pair in page.CargoNames) index.CargoNames[pair.Key] = pair.Value;
+            else
+            {
+                if (page.Offset != index.Industries.Count)
+                    throw new InvalidDataException("产业目录分页不连续，请重新读取。");
+                if (page.Offset == 0 && page.Revision != index.Revision)
+                {
+                    index.Reset(); index.Revision = page.Revision;
+                }
+                foreach (var entry in page.Items) if (index.Industries.All(e => e.EntityId != entry.EntityId)) index.Industries.Add(entry);
+                foreach (var town in page.Towns) if (index.Towns.All(t => t.EntityId != town.EntityId)) index.Towns.Add(town);
+                foreach (var pair in page.CargoNames) index.CargoNames[pair.Key] = pair.Value;
+            }
             index.Revision = page.Revision; index.Complete = page.Complete;
-            index.IndustryCount = page.IndustryCount; index.TownCount = page.TownCount;
+            index.IndustryCount = Math.Max(index.IndustryCount, page.IndustryCount);
+            index.TownCount = Math.Max(index.TownCount, page.TownCount);
+            index.CargoCount = Math.Max(index.CargoCount, page.CargoCount);
             index.UnreadIndustryCount = page.UnreadIndustryCount; index.UnreadTownCount = page.UnreadTownCount;
             index.GeneratedAt = page.GeneratedAt;
         }
@@ -447,9 +467,12 @@ namespace TransportFever3Trainer
             index.Industries.Add(warehouse);
             foreach (var spec in new[] {
                 new { id = "30", name = "肉联厂", cargo = "2" }, new { id = "31", name = "罐头厂", cargo = "2" },
-                new { id = "32", name = "纺织厂", cargo = "3" }, new { id = "33", name = "综合加工厂", cargo = "2,3" } })
+                new { id = "32", name = "纺织厂", cargo = "3" }, new { id = "33", name = "综合加工厂", cargo = "2,3" },
+                new { id = "34", name = "位置未知加工厂", cargo = "2" } })
             {
-                var entry = new IndustryEntry { EntityId = spec.id, TypeKey = "factory", TypeName = "工厂", GameName = spec.name, Name = spec.name, RecipeStatus = "verified", RolesVerified = true, X = 200 + int.Parse(spec.id), Y = 100 };
+                bool unknown = spec.id == "34";
+                var entry = new IndustryEntry { EntityId = spec.id, TypeKey = "factory", TypeName = "工厂", GameName = spec.name, Name = spec.name, RecipeStatus = "verified", RolesVerified = true,
+                    X = unknown ? double.NaN : 200 + int.Parse(spec.id), Y = unknown ? double.NaN : 100, PositionStatus = unknown ? "unknown" : "ok" };
                 foreach (var cargo in spec.cargo.Split(',')) { entry.Inputs.Add(new IndustryCargoRef { CargoId = cargo, Role = "required" }); entry.InputIds.Add(cargo); }
                 index.Industries.Add(entry);
             }
@@ -486,7 +509,7 @@ namespace TransportFever3Trainer
             if (analysis.Outputs.Count() != 2)
                 throw new InvalidOperationException("多产物产业遗漏了产物分组。");
             var meat = analysis.Outputs.First(g => g.CargoId == "2");
-            if (meat.Industries.Count != 3 || meat.Towns.Count != 2)
+            if (meat.Industries.Count != 4 || meat.Towns.Count != 2)
                 throw new InvalidOperationException("肉的产业或城镇候选数量不正确。");
             if (meat.Industries.Count(c => c.TargetId == "30") != 1 || meat.Industries.Count(c => c.TargetId == "33") != 1)
                 throw new InvalidOperationException("同一货物组内出现重复候选或漏掉多产物消费者。");
@@ -497,8 +520,8 @@ namespace TransportFever3Trainer
                 throw new InvalidOperationException("零需求城镇状态未区分。");
             if (!meat.Industries.Where(c => c.Distance.HasValue).SequenceEqual(meat.Industries.Where(c => c.Distance.HasValue).OrderBy(c => c.Distance.Value)))
                 throw new InvalidOperationException("产业候选未按距离排序。");
-            if (meat.Industries.Last().Distance.HasValue && meat.Industries.Any(c => !c.Distance.HasValue))
-                throw new InvalidOperationException("距离未知的候选没有排在末尾。");
+            if (meat.Industries.Last().Distance.HasValue || meat.Industries.Last().PositionStatus != "unknown" || !meat.Industries.Any(c => !c.Distance.HasValue))
+                throw new InvalidOperationException("距离未知的候选没有排在末尾或被赋予了假距离。");
             var optional = Analyze(index.Find("50"), index);
             if (optional.Inputs.First(g => g.CargoId == "1").Direction != "input" || optional.Inputs.First(g => g.CargoId == "4").Direction != "input")
                 throw new InvalidOperationException("替代或增产输入未保留为原料分组。");
@@ -522,8 +545,19 @@ namespace TransportFever3Trainer
             var parsed = IndustryCatalogPage.Read(sample, "r2", "1", "m1");
             if (parsed.Items.Count != 2 || parsed.Towns.Count != 1 || parsed.Items[0].InputIds.Count != 1 || parsed.Items[0].X != 10 || parsed.Items[1].HasPosition)
                 throw new InvalidOperationException("产业目录 JSON 规范化失败。");
+            if (!parsed.CargoNames.ContainsKey("2")) throw new InvalidOperationException("样本目录缺少货物 2。");
             if (parsed.CargoNames["2"] != "肉" || parsed.Towns[0].Need("2").LandUses.Count != 2 || parsed.Towns[0].Districts.Count != 2)
                 throw new InvalidOperationException("城镇需求或货物名称没有从目录回复中读取。");
+            var parts = new IndustryIndex(); var partsRevision = 3;
+            var industryPart = IndustryCatalogPage.Read(Data.Json.DeserializeObject("{\"ok\":true,\"request\":\"p1\",\"world\":\"1\",\"nameScope\":\"m1\",\"revision\":3,\"catalog\":{\"revision\":3,\"part\":\"industry\",\"industryCount\":1,\"townCount\":1,\"cargoCount\":1,\"offset\":0,\"total\":1,\"items\":[{\"entityId\":\"1\",\"typeName\":\"农场\",\"outputs\":[{\"cargoId\":\"2\",\"role\":\"output\"}]}]}}"), "p1", "1", "m1");
+            Merge(parts, industryPart);
+            var townPart = IndustryCatalogPage.Read(Data.Json.DeserializeObject("{\"ok\":true,\"request\":\"p2\",\"world\":\"1\",\"nameScope\":\"m1\",\"revision\":3,\"catalog\":{\"revision\":3,\"part\":\"town\",\"industryCount\":1,\"townCount\":1,\"cargoCount\":1,\"offset\":0,\"total\":1,\"towns\":[{\"entityId\":\"9\",\"name\":\"新港\",\"needsStatus\":\"verified\",\"districtStatus\":\"complete\",\"needs\":[{\"cargoId\":\"2\",\"status\":\"active\",\"landUses\":[1]}],\"districts\":[{\"landUse\":1,\"x\":5,\"y\":6}]}]}}"), "p2", "1", "m1");
+            Merge(parts, townPart);
+            var cargoPart = IndustryCatalogPage.Read(Data.Json.DeserializeObject("{\"ok\":true,\"request\":\"p3\",\"world\":\"1\",\"nameScope\":\"m1\",\"revision\":3,\"catalog\":{\"revision\":3,\"part\":\"cargo\",\"industryCount\":1,\"townCount\":1,\"cargoCount\":1,\"offset\":0,\"total\":1,\"cargo\":[{\"id\":\"2\",\"name\":\"肉\"}]}}"), "p3", "1", "m1");
+            Merge(parts, cargoPart);
+            if (!parts.CargoNames.ContainsKey("2")) throw new InvalidOperationException("分片合并后缺少货物 2。");
+            if (parts.Industries.Count != 1 || parts.Towns.Count != 1 || parts.CargoCount != 1 || parts.CargoNames["2"] != "肉" || parts.Revision != partsRevision)
+                throw new InvalidOperationException("产业、城镇与货物分片没有合并为完整索引。");
         }
     }
 }

@@ -509,6 +509,8 @@ local function readTownEntry(entity)
   districts=districts,districtStatus=districtStatus,
   districtError=districtStatus=='partial' and '部分需求区中心未读取' or ''},needsStatus
 end
+local CATALOG_BUDGET=480*1024
+local CATALOG_PARTS={industry=true,town=true,cargo=true}
 local function newIndustryBuild()
  local industryEntities={}
  for _,entity in pairs(entities(CT.INDUSTRY)) do industryEntities[#industryEntities+1]=entity end
@@ -519,10 +521,11 @@ local function newIndustryBuild()
  local revision=((S.industryRevision or (S.industryIndex and S.industryIndex.revision)) or 0)+1
  S.industryRevision=revision
  return {revision=revision,generatedAt=now(),world=S.world,scope=S.nameScope,
-  entities=industryEntities,townEntities=townEntities,position=0,industries=arr(),towns=arr(),cargo=arr(),
-  seenCargo={},unreadIndustryCount=0,unreadTownCount=0,townsDone=false,complete=false}
+  entities=industryEntities,townEntities=townEntities,position=0,townPosition=0,industries=arr(),towns=arr(),cargo=arr(),
+  seenCargo={},unreadIndustryCount=0,unreadTownCount=0,townsDone=#townEntities==0,cargoDone=false,complete=false}
 end
-local function buildIndustryCargo(build)
+local function ensureIndustryCargo(build)
+ if build.cargoDone then return end
  local allOK,allCargo=pcall(function()return api.res.cargoTypeRep.getAll() end)
  if allOK and type(allCargo)=='table' then
   for id in pairs(allCargo) do local key=cargoKey(id);if key then build.seenCargo[key]=true end end
@@ -530,14 +533,7 @@ local function buildIndustryCargo(build)
  local cargoIds={};for key in pairs(build.seenCargo) do cargoIds[#cargoIds+1]=tonumber(key) end
  table.sort(cargoIds)
  for _,id in ipairs(cargoIds) do build.cargo[#build.cargo+1]={id=tostring(id),name=cargoName(id)} end
-end
-local function buildIndustryTowns(build)
- for _,entity in ipairs(build.townEntities) do
-  local entry,status=readTownEntry(entity)
-  build.towns[#build.towns+1]=entry
-  if status=='unread' then build.unreadTownCount=build.unreadTownCount+1 end
- end
- build.townsDone=true
+ build.cargoDone=true
 end
 local function processIndustryBatch(build,target)
  while build.position<target do
@@ -546,13 +542,21 @@ local function processIndustryBatch(build,target)
   if status~='verified' then build.unreadIndustryCount=build.unreadIndustryCount+1 end
  end
 end
+local function processTownBatch(build,target)
+ while build.townPosition<target do
+  local entity=build.townEntities[build.townPosition+1]
+  local entry,status=readTownEntry(entity)
+  build.townPosition=build.townPosition+1;build.towns[#build.towns+1]=entry
+  if status=='unread' then build.unreadTownCount=build.unreadTownCount+1 end
+ end
+ build.townsDone=build.townPosition>=#build.townEntities
+end
 local function finishIndustryBuild(build)
- if not build.townsDone then buildIndustryTowns(build) end
- if #build.cargo==0 then buildIndustryCargo(build) end
- build.industryCount=#build.industries;build.townCount=#build.towns
+ if build.position<#build.entities or not build.townsDone or not build.cargoDone then return end
+ build.industryCount=#build.industries;build.townCount=#build.towns;build.cargoCount=#build.cargo
  build.complete=build.unreadIndustryCount==0 and build.unreadTownCount==0
  S.industryIndex={revision=build.revision,generatedAt=build.generatedAt,industries=build.industries,towns=build.towns,
-  cargo=build.cargo,industryCount=build.industryCount,townCount=build.townCount,
+  cargo=build.cargo,industryCount=build.industryCount,townCount=build.townCount,cargoCount=build.cargoCount,
   unreadIndustryCount=build.unreadIndustryCount,unreadTownCount=build.unreadTownCount,complete=build.complete}
  S.industryRevision=build.revision;S.industryIndexWorld=S.world;S.industryIndexScope=S.nameScope;S.industryBuild=nil
 end
@@ -562,46 +566,81 @@ local function industryMeta()
  if S.industryIndex and (S.industryIndexWorld~=S.world or S.industryIndexScope~=S.nameScope) then return nil end
  if S.industryIndex then
   return {schemaVersion=1,world=S.world,nameScope=S.nameScope,revision=source.revision,complete=source.complete,
-   industryCount=source.industryCount,townCount=source.townCount,generatedAt=source.generatedAt,
+   industryCount=source.industryCount,townCount=source.townCount,cargoCount=source.cargoCount,generatedAt=source.generatedAt,
    unreadIndustryCount=source.unreadIndustryCount,unreadTownCount=source.unreadTownCount}
  end
  return {schemaVersion=1,world=S.world,nameScope=S.nameScope,revision=source.revision,complete=false,
-  industryCount=#source.entities,townCount=#source.towns,generatedAt=source.generatedAt,
+  industryCount=#source.entities,townCount=#source.townEntities,cargoCount=#source.cargo,generatedAt=source.generatedAt,
   unreadIndustryCount=source.unreadIndustryCount,unreadTownCount=source.unreadTownCount}
 end
+local function validateIndustryScope(c)
+ assert(c.world==nil or tonumber(c.world)==S.world,'地图已切换，请重新读取产业数据')
+ local worldOK,world=pcall(api.engine.util.getWorld)
+ local playerOK,player=pcall(api.engine.util.getPlayer)
+ assert(worldOK and playerOK and tostring(world)==tostring(S.world) and tostring(player)==tostring(S.player),'地图或连接已切换，请重新读取产业数据')
+end
+local function catalogReply(c,part,offset,list,total,source,isComplete,message)
+ local limit=math.max(1,math.min(100,math.floor(tonumber(c.limit) or 100)))
+ if offset>total then error('产业索引分页游标已失效，请刷新产业数据') end
+ local count=math.min(limit,total-offset)
+ while true do
+  local slice=arr();for i=offset+1,offset+count do if list[i] then slice[#slice+1]=list[i] end end
+  local payload={schemaVersion=1,revision=source.revision,part=part,complete=isComplete,
+   industryCount=(source.industryCount or #source.industries),townCount=(source.townCount or #(source.townEntities or source.towns or {})),
+   cargoCount=(source.cargoCount or #source.cargo),unreadIndustryCount=source.unreadIndustryCount,unreadTownCount=source.unreadTownCount,
+   generatedAt=source.generatedAt,offset=offset,total=total,items=arr()}
+  if part=='industry' then payload.items=slice
+  elseif part=='town' then payload.towns=slice else payload.cargo=slice end
+  local response=json({ok=true,request=c.request,world=S.world,nameScope=S.nameScope,revision=source.revision,catalog=payload,
+   message=message})
+  if #response<=CATALOG_BUDGET then return response end
+  if count<=1 then error('单条产业目录数据超过传输上限，请缩小模组货物数量') end
+  count=math.max(1,math.floor(count/2))
+ end
+end
 local function industryCatalogPage(c)
- local offset=math.max(0,math.floor(tonumber(c.offset) or 0));local limit=math.max(1,math.min(100,math.floor(tonumber(c.limit) or 100)))
+ validateIndustryScope(c)
+ local part=c.part or 'industry';assert(CATALOG_PARTS[part],'未知的产业目录分片')
+ local offset=math.max(0,math.floor(tonumber(c.offset) or 0))
  local index=S.industryIndex
  if index and S.industryIndexWorld==S.world and S.industryIndexScope==S.nameScope and not S.industryBuild then
-  if offset>#index.industries then error('产业索引分页游标已失效，请刷新产业数据') end
-  local items=arr();for i=offset+1,math.min(#index.industries,offset+limit) do items[#items+1]=index.industries[i] end
-  return json({ok=true,request=c.request,world=S.world,nameScope=S.nameScope,revision=index.revision,
-   catalog={schemaVersion=1,revision=index.revision,complete=index.complete,industryCount=index.industryCount,
-    townCount=index.townCount,unreadIndustryCount=index.unreadIndustryCount,unreadTownCount=index.unreadTownCount,
-    generatedAt=index.generatedAt,offset=offset,total=#index.industries,items=items,
-    towns=offset==0 and index.towns or nil,cargo=offset==0 and index.cargo or nil,message='产业索引已读取'}})
+  local list=part=='industry' and index.industries or part=='town' and index.towns or index.cargo
+  local total=part=='industry' and #index.industries or part=='town' and #index.towns or #index.cargo
+  return catalogReply(c,part,offset,list,total,index,index.complete,'产业索引已读取')
  end
  local build=S.industryBuild
  if not build or build.world~=S.world or build.scope~=S.nameScope then
-  if offset>0 then error('产业索引已切换，请重新读取产业数据') end
+  if offset>0 or part~='industry' then error('产业索引已切换，请重新读取产业数据') end
   build=newIndustryBuild();S.industryBuild=build
  end
- if offset>build.position then error('产业索引分页游标已失效，请刷新产业数据') end
- if offset==0 and not build.townsDone then buildIndustryTowns(build) end
- if offset==0 and #build.cargo==0 then buildIndustryCargo(build) end
- local target=math.min(#build.entities,offset+limit)
- if build.position<target then processIndustryBatch(build,target) end
- local complete=build.position>=#build.entities
- if complete and build.townsDone then finishIndustryBuild(build) end
- local items=arr();for i=offset+1,math.min(#build.industries,offset+limit) do items[#items+1]=build.industries[i] end
- local total=#build.entities
- local isComplete=complete and build.townsDone
- return json({ok=true,request=c.request,world=S.world,nameScope=S.nameScope,revision=build.revision,
-  catalog={schemaVersion=1,revision=build.revision,complete=isComplete,industryCount=total,
-   townCount=#build.towns,unreadIndustryCount=build.unreadIndustryCount,unreadTownCount=build.unreadTownCount,
-   generatedAt=build.generatedAt,offset=offset,total=total,items=items,
-   towns=offset==0 and build.towns or nil,cargo=offset==0 and build.cargo or nil,
-   message=isComplete and '产业索引已读取' or '正在读取产业索引'}})
+ if part=='industry' then
+  if offset>build.position then error('产业索引分页游标已失效，请刷新产业数据') end
+  local target=math.min(#build.entities,offset+math.max(1,math.min(100,math.floor(tonumber(c.limit) or 100))))
+  if build.position<target then processIndustryBatch(build,target) end
+  ensureIndustryCargo(build)
+  if build.position>=#build.entities and build.townsDone and build.cargoDone then finishIndustryBuild(build) end
+  local total=#build.entities
+  local isComplete=build.complete and build.unreadIndustryCount==0 and build.unreadTownCount==0
+  return catalogReply(c,part,offset,build.industries,total,build,isComplete,
+   isComplete and '产业索引已读取' or '正在读取产业索引')
+ elseif part=='town' then
+  if offset>build.townPosition then error('城镇索引分页游标已失效，请刷新产业数据') end
+  local target=math.min(#build.townEntities,offset+math.max(1,math.min(100,math.floor(tonumber(c.limit) or 100))))
+  if build.townPosition<target then processTownBatch(build,target) end
+  ensureIndustryCargo(build)
+  if build.position>=#build.entities and build.townsDone and build.cargoDone then finishIndustryBuild(build) end
+  local total=#build.townEntities
+  local isComplete=build.complete and build.unreadIndustryCount==0 and build.unreadTownCount==0
+  return catalogReply(c,part,offset,build.towns,total,build,isComplete,
+   isComplete and '城镇索引已读取' or '正在读取城镇索引')
+ else
+  ensureIndustryCargo(build)
+  if build.position>=#build.entities and build.townsDone and build.cargoDone then finishIndustryBuild(build) end
+  local total=#build.cargo
+  local isComplete=build.complete and build.unreadIndustryCount==0 and build.unreadTownCount==0
+  return catalogReply(c,part,offset,build.cargo,total,build,isComplete,
+   isComplete and '货物索引已读取' or '正在读取货物索引')
+ end
 end
 local function stockOptions()
  local r=arr();local seen={}
@@ -784,6 +823,7 @@ function S.dispatch(c)
   assert(type(c.request)=='string' and #c.request>0 and #c.request<=80,'产业目录请求标识无效')
   return industryCatalogPage(c)
  elseif c.op=='industry_refresh' then
+  validateIndustryScope(c)
   S.industryRevision=(S.industryIndex and S.industryIndex.revision) or S.industryRevision or 0
   S.industryIndex=nil;S.industryIndexWorld=nil;S.industryIndexScope=nil;S.industryBuild=nil
   local build=newIndustryBuild();S.industryBuild=build;S.lastMessage='正在刷新产业与城镇索引'

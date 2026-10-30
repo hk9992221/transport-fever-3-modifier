@@ -77,8 +77,8 @@ namespace TransportFever3Trainer
         IndustryAnalysis analysis;
         IndustryGroup activeGroup;
         string selectedType = "*", selectedDirection = "*", lastScope = "", pageError = "";
-        int seenMetaRevision, visibleCount = 100, requestSerial;
-            bool arranging, populating, loading, preview, recommending, catalogComplete, activated, retriedInitial;
+        int seenMetaRevision, visibleCount = 100, requestSerial, cargoTotal, townTotal;
+        bool arranging, populating, loading, preview, recommending, catalogComplete, activated, retriedInitial;
         int P(int value) { return Ui.Px(this, value); }
 
         public IndustryPage(MainForm parent)
@@ -207,7 +207,7 @@ namespace TransportFever3Trainer
             {
                 lastScope = scope; seenMetaRevision = 0;
                 index.Reset(); pendingIndex = null; analysis = null; activeGroup = null; history.Clear(); catalogComplete = false;
-                currentAnalysisId = ""; resumeGroupDirection = ""; resumeGroupCargo = ""; resumeVisible = 100; resumeScrollY = 0;
+                currentAnalysisId = ""; resumeGroupDirection = ""; resumeGroupCargo = ""; resumeVisible = 100; resumeScrollY = 0; cargoTotal = townTotal = 0;
                 loading = false; pageError = ""; retriedInitial = false; selectedType = "*"; selectedDirection = "*";
                 preview = false; search.Text = ""; FillDirection(); FillTypeChoices(); RefreshAnalysisCard(); RefreshGroups(); RebuildResults(true);
             }
@@ -258,7 +258,7 @@ namespace TransportFever3Trainer
         {
             if (preview || !form.CaptureReady) return;
             if (currentAnalysisId.Length == 0 && analysis != null) currentAnalysisId = analysis.Entry.EntityId;
-            loading = true; pageError = ""; catalogComplete = false; pendingIndex = new IndustryIndex();
+            loading = true; pageError = ""; catalogComplete = false; cargoTotal = townTotal = 0; pendingIndex = new IndustryIndex();
             resumeGroupDirection = activeGroup == null ? "" : activeGroup.Direction;
             resumeGroupCargo = activeGroup == null ? "" : activeGroup.CargoId;
             resumeVisible = visibleCount; resumeScrollY = resultsScroll.AutoScrollPosition.Y;
@@ -287,17 +287,15 @@ namespace TransportFever3Trainer
             });
         }
 
-        void RequestCatalogPage(int offset)
+        void RequestCatalogPage(int offset, string part = "industry")
         {
             if (preview || !form.CaptureReady) return;
             string request = "industry-catalog-" + (++requestSerial).ToString(System.Globalization.CultureInfo.InvariantCulture);
             string scope = form.NameScope, world = Data.Str(form.State, "world"), map = Data.Str(form.State, "nameScope");
-            
-            form.RequestReply(new { op = "industry_catalog", request = request, world = Data.Get(form.State, "world"), offset = offset, limit = 100 },
+            form.RequestReply(new { op = "industry_catalog", request = request, world = Data.Get(form.State, "world"), offset = offset, limit = 100, part = part },
                 delegate(bool success, string message, object reply)
                 {
                     if (scope != form.NameScope) return;
-                    
                     if (!success)
                     {
                         pendingIndex = null; loading = false; pageError = message; catalogComplete = index.Industries.Count > 0;
@@ -307,32 +305,41 @@ namespace TransportFever3Trainer
                     {
                         if (pendingIndex == null) pendingIndex = new IndustryIndex();
                         var page = IndustryCatalogPage.Read(reply, request, world, map);
-                        if (offset > 0 && page.Revision != pendingIndex.Revision)
+                        if (!IndustryRelations.IsCurrent(reply, request, world, map, page.Revision))
+                            throw new InvalidDataException("产业目录回复与当前请求或地图不一致，请重新读取。");
+                        if (page.Revision != pendingIndex.Revision)
                         {
-                            RequestCatalogPage(0); return;
+                            if (part != "industry" || offset > 0) { pendingIndex.Reset(); RequestCatalogPage(0, "industry"); return; }
+                            pendingIndex.Reset();
                         }
-                        if (offset == 0 && page.Revision != pendingIndex.Revision) pendingIndex.Reset();
                         ApplyDisplayNames(page);
-                        int before = pendingIndex.Industries.Count;
+                        int before = part == "industry" ? pendingIndex.Industries.Count : part == "town" ? pendingIndex.Towns.Count : pendingIndex.CargoNames.Count;
                         IndustryRelations.Merge(pendingIndex, page);
-                        int expectedTotal = Math.Max(page.Total, pendingIndex.IndustryCount);
-                        if (pendingIndex.Industries.Count == before && pendingIndex.Industries.Count < expectedTotal)
-                            throw new InvalidDataException("产业目录分页没有前进，请刷新产业数据。");
-                        if (pendingIndex.Industries.Count < expectedTotal)
+                        townTotal = Math.Max(townTotal, page.TownCount);
+                        cargoTotal = Math.Max(cargoTotal, page.CargoCount);
+                        if (part == "industry")
                         {
-                            RequestCatalogPage(pendingIndex.Industries.Count); return;
+                            int expectedTotal = Math.Max(page.Total, pendingIndex.IndustryCount);
+                            if (pendingIndex.Industries.Count == before && pendingIndex.Industries.Count < expectedTotal)
+                                throw new InvalidDataException("产业目录分页没有前进，请刷新产业数据。");
+                            if (pendingIndex.Industries.Count < expectedTotal) { RequestCatalogPage(pendingIndex.Industries.Count, "industry"); return; }
+                            if (townTotal > 0) { RequestCatalogPage(0, "town"); return; }
+                            if (cargoTotal > 0) { RequestCatalogPage(0, "cargo"); return; }
                         }
-                        index = pendingIndex; pendingIndex = null;
-                        loading = false; catalogComplete = true; pageError = "";
-                        var keepEntry = currentAnalysisId.Length == 0 ? null : index.Find(currentAnalysisId);
-                        if (keepEntry != null) analysis = IndustryRelations.Analyze(keepEntry, index);
-                        else if (analysis != null && index.Find(analysis.Entry.EntityId) == null) analysis = null;
-                        FillTypeChoices();
-                        activeGroup = null; visibleCount = Math.Max(100, resumeVisible);
-                        RefreshAnalysisCard(); RefreshGroups(resumeGroupDirection, resumeGroupCargo);
-                        RebuildResults(false);
-                        resultsScroll.AutoScrollPosition = new Point(0, -Math.Abs(resumeScrollY));
-                        UpdateActions();
+                        else if (part == "town")
+                        {
+                            if (pendingIndex.Towns.Count == before && pendingIndex.Towns.Count < page.Total)
+                                throw new InvalidDataException("城镇目录分页没有前进，请刷新产业数据。");
+                            if (pendingIndex.Towns.Count < page.Total) { RequestCatalogPage(pendingIndex.Towns.Count, "town"); return; }
+                            if (cargoTotal > 0) { RequestCatalogPage(0, "cargo"); return; }
+                        }
+                        else
+                        {
+                            if (pendingIndex.CargoNames.Count == before && pendingIndex.CargoNames.Count < page.Total)
+                                throw new InvalidDataException("货物目录分页没有前进，请刷新产业数据。");
+                            if (pendingIndex.CargoNames.Count < page.Total) { RequestCatalogPage(pendingIndex.CargoNames.Count, "cargo"); return; }
+                        }
+                        CompleteLoad();
                     }
                     catch (Exception e)
                     {
@@ -340,6 +347,21 @@ namespace TransportFever3Trainer
                         UpdateIndexStatus(new Dictionary<string, object>()); UpdateActions();
                     }
                 });
+        }
+
+        void CompleteLoad()
+        {
+            index = pendingIndex; pendingIndex = null;
+            loading = false; catalogComplete = true; pageError = "";
+            var keepEntry = currentAnalysisId.Length == 0 ? null : index.Find(currentAnalysisId);
+            if (keepEntry != null) analysis = IndustryRelations.Analyze(keepEntry, index);
+            else if (analysis != null && index.Find(analysis.Entry.EntityId) == null) analysis = null;
+            FillTypeChoices();
+            activeGroup = null; visibleCount = Math.Max(100, resumeVisible);
+            RefreshAnalysisCard(); RefreshGroups(resumeGroupDirection, resumeGroupCargo);
+            RebuildResults(false);
+            resultsScroll.AutoScrollPosition = new Point(0, Math.Abs(resumeScrollY));
+            UpdateActions();
         }
 
         string currentAnalysisId = "";
@@ -542,7 +564,7 @@ namespace TransportFever3Trainer
             }
             finally { populating = false; }
             Arrange();
-            resultsScroll.AutoScrollPosition = new Point(0, -Math.Abs(state.ScrollY));
+            resultsScroll.AutoScrollPosition = new Point(0, Math.Abs(state.ScrollY));
             UpdateActions();
         }
 
@@ -658,7 +680,7 @@ namespace TransportFever3Trainer
             finally
             {
                 resultsScroll.ResumeLayout(true);
-                if (resetScroll) resultsScroll.AutoScrollPosition = Point.Empty; else resultsScroll.AutoScrollPosition = new Point(0, -Math.Abs(oldScroll));
+                if (resetScroll) resultsScroll.AutoScrollPosition = Point.Empty; else resultsScroll.AutoScrollPosition = new Point(0, Math.Abs(oldScroll));
             }
             UpdateRowStates();
         }
@@ -881,6 +903,25 @@ namespace TransportFever3Trainer
             if (analysis.Entry.EntityId != "20" || history.Count != 0) throw new InvalidOperationException("返回上一分析失败。");
             Navigate("20", true);
             if (history.Count != 0) throw new InvalidOperationException("相邻重复分析被重复入栈。");
+            search.Text = "肉"; selectedDirection = "*"; selectedType = "*";
+            activeGroup = analysis.Outputs.First(g => g.CargoId == "2"); visibleCount = 1000;
+            RebuildResults(true); Arrange(); Application.DoEvents();
+            int scrollMax = Math.Max(0, resultsScroll.DisplayRectangle.Height - resultsScroll.ClientSize.Height);
+            if (scrollMax < 40) throw new InvalidOperationException("历史滚动测试缺少可滚动结果。");
+            resultsScroll.AutoScrollPosition = new Point(0, 80); Application.DoEvents();
+            int savedScroll = resultsScroll.AutoScrollPosition.Y;
+            if (savedScroll >= 0) throw new InvalidOperationException("结果列表没有记录滚动偏移。");
+            Navigate("30", true); Back();
+            if (search.Text != "肉" || activeGroup == null || activeGroup.CargoId != "2" || visibleCount < 1000)
+                throw new InvalidOperationException("返回上一分析没有恢复筛选、分组或已加载数量。");
+            if (resultsScroll.AutoScrollPosition.Y != savedScroll)
+                throw new InvalidOperationException("返回上一分析没有恢复滚动位置。");
+            resumeGroupDirection = "output"; resumeGroupCargo = "2"; resumeVisible = 1000; resumeScrollY = savedScroll;
+            pendingIndex = IndustryRelations.Synthetic(); CompleteLoad(); Arrange(); Application.DoEvents();
+            if (activeGroup == null || activeGroup.CargoId != "2" || visibleCount < 1000)
+                throw new InvalidOperationException("刷新完成没有恢复分组或已加载数量。");
+            if (resultsScroll.AutoScrollPosition.Y != savedScroll)
+                throw new InvalidOperationException("刷新完成没有恢复滚动位置。");
         }
     }
 }

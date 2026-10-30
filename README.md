@@ -82,6 +82,14 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 
 构建会输出当前阶段。离线检查通过环境标记和入口参数阻止游戏连接与模块注入。临时目录清理会短暂重试；仍有文件被占用时只单独告警，保留原始构建错误。能够读取进程模块时，会指出加载了临时 DLL 的游戏 PID。已被游戏加载的旧 DLL 需在正常退出游戏后才能删除。
 
+产业推荐的 Lua 适配检查可单独运行（Lua 5.4）：
+
+```powershell
+lua .\scripts\industry-lua-check.lua
+```
+
+检查使用固定模拟地图，覆盖配方/增产角色、城镇需求、分页字节预算、受保护可调用对象、地图切换和部分读取失败。
+
 默认产物在 `dist` 中。已有同名 EXE 时，先移走旧产物，或通过 `-OutputDirectory` 指定新目录。
 
 ## 文件范围
