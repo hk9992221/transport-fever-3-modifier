@@ -433,11 +433,12 @@ local function readTownNeeds(town)
  local c=component(town,CT.TOWN)
  if not c or type(c.cargoNeeds)~='table' then return {},'unread' end
  local needs,seen={},{}
- local parsed,sawEntries=false,false
+ local parsed,sawEntries,invalid=false,false,false
  for landUse,list in pairs(c.cargoNeeds) do
   sawEntries=true
   local use=tonumber(landUse)
   if use and use>=1 and use<=3 and type(list)=='table' then
+   if next(list)~=nil and #list==0 then invalid=true end
    for _,entry in ipairs(list) do
     local id,amount,status
     if type(entry)=='table' then
@@ -449,12 +450,24 @@ local function readTownNeeds(town)
     if id then
      if status==nil and amount~=nil then status=amount>0 and 'active' or 'zero' end
      addTownNeed(needs,seen,id,use,status);parsed=true
-    end
+    else invalid=true end
    end
-  end
+  else invalid=true end
  end
- if parsed or not sawEntries then return needs,'verified' end
+ if not sawEntries or (parsed and not invalid) then return needs,'verified' end
+ if parsed then return needs,'partial' end
  return needs,'unread'
+end
+local function vectorPoint(value)
+ if value==nil then return nil end
+ local function field(key)
+  local ok,result=pcall(function()return value[key] end)
+  if ok then return result end
+ end
+ local x=tonumber(field('x'));local y=tonumber(field('y'))
+ if x==nil then x=tonumber(field(1)) end
+ if y==nil then y=tonumber(field(2)) end
+ if finite(x) and finite(y) then return {x=x,y=y} end
 end
 local function districtCenter(town,landUse)
  local fn=api and api.engine and api.engine.util and api.engine.util.town and api.engine.util.town.getTownDistrictCenter
@@ -462,11 +475,8 @@ local function districtCenter(town,landUse)
  local reasons={}
  for _,variant in ipairs({{town,landUse},{town,landUse,1},{town,{landUse}}}) do
   local ok,value=pcall(fn,variant[1],variant[2],variant[3])
-  if ok and type(value)=='table' then
-   local x=tonumber(value.x or value[1]);local y=tonumber(value.y or value[2])
-   if finite(x) and finite(y) then return {x=x,y=y} end
-  end
-  reasons[#reasons+1]=tostring(value)
+  if ok then local center=vectorPoint(value);if center then return center end end
+  reasons[#reasons+1]=type(value)..':'..tostring(value)
  end
  return nil,table.concat(reasons,'；')
 end
@@ -547,7 +557,7 @@ local function processTownBatch(build,target)
   local entity=build.townEntities[build.townPosition+1]
   local entry,status=readTownEntry(entity)
   build.townPosition=build.townPosition+1;build.towns[#build.towns+1]=entry
-  if status=='unread' then build.unreadTownCount=build.unreadTownCount+1 end
+  if status~='verified' then build.unreadTownCount=build.unreadTownCount+1 end
  end
  build.townsDone=build.townPosition>=#build.townEntities
 end

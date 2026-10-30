@@ -167,6 +167,11 @@ local function makeMock(opts)
     }
 end
 
+local function makeNativeVector()
+    if io.tmpfile then return io.tmpfile(), true end
+    return coroutine.create(function() end), false
+end
+
 local function load(opts)
     __SZTF3F6 = nil
     __SZTF3Callable6 = {}
@@ -290,6 +295,39 @@ do
     local cargo = fetchPart(S, "cargo")
     expect(industries == 100 and towns == 2 and cargo == 300, "stress counts mismatch")
     expect(S.industryIndex and S.industryIndex.complete == true, "stress index did not complete")
+end
+
+-- 5. One readable demand district and one unparseable district must be partial.
+do
+    local S, mock = load({ count = 2, towns = 1 })
+    local town = mock.engine.getComponent(2001, mock.type.ComponentType.TOWN)
+    town.cargoNeeds = { { { 2, 100 } }, "unreadable district", {} }
+    fetchPart(S, "industry"); fetchPart(S, "town"); fetchPart(S, "cargo")
+    expect(S.industryIndex.complete == false, "partially unread town was reported complete")
+    expect(S.industryIndex.unreadTownCount > 0, "partially unread town was omitted from pending count")
+    expect(S.industryIndex.towns[1].needsStatus ~= "verified", "partially unread town needs were marked verified")
+end
+
+-- 6. A field-readable userdata vector must be accepted; an unreadable one must be partial.
+do
+    local S, mock = load({ count = 2, towns = 1 })
+    local vector, isFile = makeNativeVector()
+    local previous = debug.getmetatable(vector)
+    debug.setmetatable(vector, { __index = { x = 100, y = 200, z = 0 } })
+    mock.engine.util.town.getTownDistrictCenter = function() return vector end
+    fetchPart(S, "industry"); fetchPart(S, "town"); fetchPart(S, "cargo")
+    debug.setmetatable(vector, previous); if isFile then vector:close() end
+    local town = S.industryIndex.towns[1]
+    expect(town.districtStatus == "complete" and #town.districts > 0, "field-readable userdata district vector was rejected")
+
+    S, mock = load({ count = 2, towns = 1 })
+    vector, isFile = makeNativeVector(); previous = debug.getmetatable(vector)
+    debug.setmetatable(vector, { __index = { z = 1 } })
+    mock.engine.util.town.getTownDistrictCenter = function() return vector end
+    fetchPart(S, "industry"); fetchPart(S, "town"); fetchPart(S, "cargo")
+    debug.setmetatable(vector, previous); if isFile then vector:close() end
+    town = S.industryIndex.towns[1]
+    expect(town.districtStatus ~= "complete", "unreadable userdata vector was accepted")
 end
 
 print("INDUSTRY_LUA_CHECK_OK")
