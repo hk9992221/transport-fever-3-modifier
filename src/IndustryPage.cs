@@ -248,6 +248,9 @@ namespace TransportFever3Trainer
                 (catalogComplete ? " · 已读取完整目录" : " · 已确认 " + known + "，仍有 " + Math.Max(0, totalCount - known) + " 个待读取");
             if (index.UnreadIndustryCount > 0) text += " · 配方未读取 " + index.UnreadIndustryCount;
             if (index.UnreadTownCount > 0) text += " · 城镇需求未读取 " + index.UnreadTownCount;
+            // A failed cargo catalogue read leaves the identity of every cargo
+            // id uncertain, so it is reported separately from the rule reads.
+            if (!index.CargoCatalogueComplete) text += " · 货物目录未读取，货物身份待核验";
             indexStatus.Text = text;
             matchInfo.Text = "当前匹配 " + Filtered().Count() + " 座 / 共 " + totalCount + " 座";
         }
@@ -580,13 +583,18 @@ namespace TransportFever3Trainer
             var entry = analysis.Entry;
             analysisTitle.Text = entry.Name;
             string level = entry.Level > 0 ? " · 等级 " + entry.Level + (entry.MaxLevel > 0 ? " / " + entry.MaxLevel : "") : "";
-            string recipe = entry.RecipeStatus == "verified" ? "配方已读取" + (entry.RolesVerified ? "" : "（配比/替代关系未读取）") : entry.RecipeStatus == "partial" ? "配方部分读取" : "生产规则未读取";
+            string recipe = entry.RecipeStatus == "verified" ? "配方已读取" + (entry.RolesVerified ? "" : "（配比/替代关系未读取）")
+                : entry.RecipeStatus == "empty" ? "该产业没有生产规则"
+                : entry.RecipeStatus == "partial" ? "配方部分读取" : "生产规则未读取";
             analysisMeta.Text = entry.TypeName + level + " · " + recipe + (entry.PositionStatus == "ok" ? "" : " · 坐标未知");
-            var inputs = entry.Inputs.GroupBy(x => x.CargoId).Select(g => { var first = g.First(); return index.CargoName(first.CargoId) + (first.Role != "required" ? "（" + first.RoleText + "）" : ""); }).ToList();
+            var inputs = entry.Inputs.GroupBy(x => x.CargoId).Select(g => { var first = g.First(); return index.CargoName(first.CargoId) + (first.Role != "required" ? "（" + first.RoleSummary + "）" : ""); }).ToList();
             var outputs = entry.Outputs.GroupBy(x => x.CargoId).Select(g => { var first = g.First(); return index.CargoName(first.CargoId) + (first.Role == "byproduct" ? "（副产品）" : ""); }).ToList();
-            analysisTags.Text = "原料：" + (inputs.Count == 0 ? (entry.RecipeRead ? "无" : "未读取") : string.Join("、", inputs)) +
-                "\r\n产物：" + (outputs.Count == 0 ? (entry.RecipeRead ? "无" : "未读取") : string.Join("、", outputs));
+            string inputState = entry.InputsKnownEmpty ? "无" : entry.InputsUncertain ? "未读取完整" : "无";
+            string outputState = entry.OutputsKnownEmpty ? "无" : entry.OutputsUncertain ? "未读取完整" : "无";
+            analysisTags.Text = "原料：" + (inputs.Count == 0 ? inputState : string.Join("、", inputs)) +
+                "\r\n产物：" + (outputs.Count == 0 ? outputState : string.Join("、", outputs));
             analysisNote.Text = entry.RecipeStatus == "unavailable" ? "生产规则未读取，暂时不能生成上下游候选。" + (entry.RecipeError.Length > 0 ? " " + entry.RecipeError : "") :
+                entry.UnparsedRuleCount > 0 ? "有 " + entry.UnparsedRuleCount + " 条规则未能解释，下游结果可能不完整。距离基准：" + entry.Name + "（直线距离）。" :
                 "距离基准：" + entry.Name + "（直线距离）。定位候选不会改变分析起点。";
         }
 
@@ -662,12 +670,15 @@ namespace TransportFever3Trainer
                     resultsEmpty.Visible = true; resultsContent.SetBounds(0, 0, 1, 1); return;
                 }
                 resultsTitle.Text = (activeGroup.Direction == "input" ? "原料供应 → " : "产品去向 → ") + activeGroup.CargoName;
-                resultsNote.Text = activeGroup.Direction == "input" ? "全部供应产业按直线距离由近到远排列；距离未知者排在末尾。" : activeGroup.TownRuleText;
+                // The completeness of the candidate set is stated next to the
+                // list: an unread rule elsewhere on the map must not look
+                // like "this product has no downstream".
+                resultsNote.Text = activeGroup.Direction == "input" ? activeGroup.SupplyText : activeGroup.DownstreamText;
                 int width = Math.Max(1, resultsScroll.ClientSize.Width - P(19)), y = 0;
                 if (activeGroup.Direction == "input")
-                    AppendSection("供应产业（" + activeGroup.Industries.Count + "）", width, ref y, activeGroup.Industries, "当前地图未找到生产该原料的产业。", true);
+                    AppendSection("供应产业（" + activeGroup.Industries.Count + "）", width, ref y, activeGroup.Industries, activeGroup.SupplyState == "unread" ? "尚未确认供应该原料的产业，部分产业规则未读取。" : "当前地图未找到生产该原料的产业。", true);
                 else
-                    AppendSection("下游产业（" + activeGroup.Industries.Count + "）", width, ref y, activeGroup.Industries, "当前地图未找到消耗该产品的产业。", true);
+                    AppendSection("下游产业（" + activeGroup.Industries.Count + "）", width, ref y, activeGroup.Industries, activeGroup.DownstreamState == "unread" ? "尚未确认下游产业，部分产业规则未读取。" : "当前地图未找到消耗该产品的产业。", true);
                 if (activeGroup.Direction == "output")
                     AppendSection("供给城镇（" + activeGroup.Towns.Count + "）", width, ref y, activeGroup.Towns, activeGroup.TownRuleState == "unread" ? "城镇需求读取未完成，无法确认该产品是否有供给用途。" : "该产品未识别到城镇供给用途。", false);
                 resultsContent.SetBounds(0, 0, width, Math.Max(1, y));
@@ -872,6 +883,7 @@ namespace TransportFever3Trainer
             preview = true; pendingIndex = null; index.Reset();
             index.Revision = previewIndex.Revision; index.Complete = previewIndex.Complete; index.IndustryCount = previewIndex.IndustryCount;
             index.TownCount = previewIndex.TownCount; index.UnreadIndustryCount = previewIndex.UnreadIndustryCount; index.UnreadTownCount = previewIndex.UnreadTownCount;
+            index.CargoCatalogueComplete = previewIndex.CargoCatalogueComplete;
             index.GeneratedAt = previewIndex.GeneratedAt;
             foreach (var entry in previewIndex.Industries) index.Industries.Add(entry);
             foreach (var town in previewIndex.Towns) index.Towns.Add(town);
