@@ -310,8 +310,9 @@ namespace TransportFever3Trainer
             detailViewport.AutoScroll = !stack;
             int dw = Math.Max(1, detailWidth - P(2) - (!stack ? P(19) : 0));
             int inner = Math.Max(1, dw - pad * 2), y = pad;
-            title.SetBounds(pad, y, Math.Max(1, inner - P(100)), P(28));
-            favorite.SetBounds(dw - pad - P(92), y, P(92), Ui.ButtonHeight(favorite, 28));
+            int favoriteWidth = Ui.ButtonWidth(favorite, 92);
+            title.SetBounds(pad, y, Math.Max(1, inner - favoriteWidth - P(8)), P(28));
+            favorite.SetBounds(dw - pad - favoriteWidth, y, favoriteWidth, Ui.ButtonHeight(favorite, 28));
             y += Math.Max(P(28), favorite.Height) + P(8);
             selection.SetBounds(pad, y, inner, Ui.WrappedHeight(selection, inner, 26)); y = selection.Bottom + P(20);
             targetLabel.SetBounds(pad, y, inner, P(24)); y = targetLabel.Bottom + P(4);

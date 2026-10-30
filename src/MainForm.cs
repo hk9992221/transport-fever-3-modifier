@@ -40,7 +40,7 @@ namespace TransportFever3Trainer
         readonly Ui.FontSnapshot logicalFonts;
         Panel featurePage, featureScroll, featuresContent;
         FlowLayoutPanel groups;
-        CameraPage camera; TextBox diagnosis;
+        CameraPage camera; IndustryPage industry; TextBox diagnosis;
         string page = "features", group = "全部", lastSnapshot = "";
         int P(int n) { return Ui.Px(this, n); }
         protected override Size MinimumLogicalSize { get { return new Size(620, 440); } }
@@ -70,7 +70,7 @@ namespace TransportFever3Trainer
             navigationBar.Name = "page-navigation"; actions.Name = "sidebar-actions";
             navigationBar.FlowDirection = actions.FlowDirection = FlowDirection.TopDown;
             navigationBar.WrapContents = actions.WrapContents = false; navigationBar.AutoScroll = true;
-            string[] names = { "常用功能", "货物添加", "世界管理", "镜头书签", "诊断" }, ids = { "features", "cargo", "world", "camera", "diagnostics" };
+            string[] names = { "常用功能", "货物添加", "世界管理", "产业推荐", "镜头书签", "诊断" }, ids = { "features", "cargo", "world", "industry", "camera", "diagnostics" };
             for (int i = 0; i < names.Length; i++)
             {
                 string id = ids[i]; var button = new PillButton { Text = names[i], Name = "navigation-" + id, Navigation = true, Font = Theme.F(10) };
@@ -84,6 +84,7 @@ namespace TransportFever3Trainer
             foreach (string kind in new[] { "cargo", "world" })
             { var catalog = new CatalogPage(this, kind) { Dock = DockStyle.Fill }; catalogs.Add(catalog); AddPage(kind, catalog); }
             camera = new CameraPage(this) { Dock = DockStyle.Fill }; AddPage("camera", camera);
+            industry = new IndustryPage(this) { Dock = DockStyle.Fill }; AddPage("industry", industry);
             var diagnosticsPage = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12), BackColor = Theme.Card };
             diagnosis = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BorderStyle = BorderStyle.FixedSingle,
                 BackColor = Theme.Card, ForeColor = Theme.Ink, Font = Theme.F(10), Dock = DockStyle.Fill };
@@ -117,7 +118,7 @@ namespace TransportFever3Trainer
             {
                 if (logicalFonts != null) logicalFonts.Restore();
                 var area = LayoutArea;
-                int pad = P(16), gap = P(18), sideWidth = P(area.Width >= P(900) ? 184 : 132);
+                int pad = P(16), gap = P(18), sideWidth = P(area.Width >= P(900) ? 184 : 156);
                 sidebar.SetBounds(area.Left + pad, area.Top + pad, sideWidth, Math.Max(1, area.Height - pad * 2));
                 bool shortSidebar = sidebar.Height < P(420);
                 mark.SetBounds(P(12), P(18), P(28), P(28));
@@ -160,7 +161,7 @@ namespace TransportFever3Trainer
                 int pageTop = header.Bottom + P(8), footer = P(24);
                 pages.SetBounds(contentLeft, pageTop, w, Math.Max(1, area.Bottom - pageTop - pad - footer));
                 status.SetBounds(contentLeft + P(2), area.Bottom - pad - footer + P(4), Math.Max(1, w - P(4)), footer);
-                ArrangeFeatures(); foreach (var catalog in catalogs) catalog.Arrange(); camera.Arrange();
+                ArrangeFeatures(); foreach (var catalog in catalogs) catalog.Arrange(); camera.Arrange(); if (industry != null) industry.Arrange();
             }
             finally { arranging = false; }
         }
@@ -229,9 +230,10 @@ namespace TransportFever3Trainer
             if (!pageViews.ContainsKey(id)) id = "features"; page = id;
             foreach (var view in pageViews) view.Value.Visible = view.Key == id;
             foreach (var button in navigation) button.Value.Primary = button.Key == id;
-            heading.Text = id == "features" ? "常用功能 · " + cards.Count : id == "cargo" ? "货物添加" : id == "world" ? "世界管理" : id == "camera" ? "镜头书签" : "连接诊断";
-            pageHint.Text = id == "features" ? "选择分类，设置数值后再开启功能。" : id == "cargo" ? "选择货物 → 选择库存 → 设置每种数量并添加。" : id == "world" ? "选择城镇或产业，再修改参数、名称或定位镜头。" : id == "camera" ? "读取镜头后调整并应用，常用地点可保存为书签。" : "导出诊断，查看连接与功能不可用的具体原因。";
+            heading.Text = id == "features" ? "常用功能 · " + cards.Count : id == "cargo" ? "货物添加" : id == "world" ? "世界管理" : id == "industry" ? "产业推荐" : id == "camera" ? "镜头书签" : "连接诊断";
+            pageHint.Text = id == "features" ? "选择分类，设置数值后再开启功能。" : id == "cargo" ? "选择货物 → 选择库存 → 设置每种数量并添加。" : id == "world" ? "选择城镇或产业，再修改参数、名称或定位镜头。" : id == "industry" ? "选择产业，查看全部原料供应与产品去向；距离以当前分析建筑为基准。" : id == "camera" ? "读取镜头后调整并应用，常用地点可保存为书签。" : "导出诊断，查看连接与功能不可用的具体原因。";
             Arrange();
+            if (id == "industry" && industry != null) industry.Activate();
         }
         public void SelectFirst() { foreach (var catalog in catalogs) catalog.SelectFirst(); }
         public void Notify(string text, bool error = false) { if (closing) return; status.Text = text; status.ForeColor = error ? Color.FromArgb(180, 45, 52) : Theme.Muted; tooltips.SetToolTip(status, text); }
@@ -258,10 +260,21 @@ namespace TransportFever3Trainer
             else
             {
                 var data = Data.Obj(Data.Json.DeserializeObject(Data.Json.Serialize(command))); string op = Data.Str(data, "op"), id = op == "set" ? Data.Str(data, "id") : op;
-                if (op != "reset" && op != "refresh" && op != "camera_read" && !(op == "set" && !Data.Bool(data, "enabled")) && !IsAvailable(id)) error = UnavailableReason(id);
+                string capability = op == "industry_catalog" || op == "industry_refresh" ? "industry" : id;
+                if (op != "reset" && op != "refresh" && op != "camera_read" && !(op == "set" && !Data.Bool(data, "enabled")) && !IsAvailable(capability)) error = UnavailableReason(capability);
             }
             if (error != null) { Notify(error, true); if (completed != null) completed(false, error); return; }
             requests.Enqueue(new RequestItem { Command = command, Scope = NameScope, Completed = completed }); SendNext();
+        }
+        public void RequestReply(object command, Action<bool, string, object> completed)
+        {
+            string scope = NameScope;
+            Request(command, delegate(bool success, string message) {
+                object reply = null;
+                if (success && bridge != null) try { reply = Data.Json.DeserializeObject(bridge.Response); } catch (Exception e) { success = false; message = e.Message; }
+                if (scope != NameScope) { if (completed != null) completed(false, "地图或连接已切换，已取消旧的产业请求。", null); return; }
+                if (completed != null) completed(success, message, reply);
+            });
         }
         public void ReadCamera(bool refreshStocks, Action<bool, string> completed)
         {
@@ -339,7 +352,7 @@ namespace TransportFever3Trainer
                     if (!success) CancelQueued(message); SendNext();
                 }
                 online.Text = CaptureReady ? Busy ? "● 游戏已连接 · 操作执行中" : "● 游戏已连接" : "● 游戏未连接";
-                foreach (var catalog in catalogs) catalog.UpdateActions(); camera.UpdateState(); Enable(reset, CaptureReady && !Busy);
+                foreach (var catalog in catalogs) catalog.UpdateActions(); camera.UpdateState(); if (industry != null) industry.UpdateActions(); Enable(reset, CaptureReady && !Busy);
             }
             catch (Exception e)
             {
@@ -358,13 +371,18 @@ namespace TransportFever3Trainer
             foreach (var item in cards)
             { object value; bool enabled = settings.TryGetValue(item.Key, out value); if (!Busy) item.Value.State(enabled, value); item.Value.Capability(Data.Get(caps, item.Key), playing); }
             foreach (var catalog in catalogs) { catalog.UpdateRows(Data.Get(State, catalog.Kind == "cargo" ? "catalog" : "worlds")); catalog.UpdateStocks(); }
-            if (camera != null) camera.UpdateState(); Enable(reset, playing && !Busy);
+            if (camera != null) camera.UpdateState(); if (industry != null) industry.UpdateState(); Enable(reset, playing && !Busy);
             if (diagnosis != null)
             {
                 var d = Data.Get(State, "diagnostics");
+                var industryMeta = Data.Obj(Data.Get(State, "industryIndex"));
+                string industryText = industryMeta.Count == 0 ? "未读取" : "v" + Data.Num(industryMeta, "revision") + " · 产业 " + Data.Num(industryMeta, "industryCount") +
+                    " · 城镇 " + Data.Num(industryMeta, "townCount") + " · 配方未读取 " + Data.Num(industryMeta, "unreadIndustryCount") +
+                    " · 城镇需求未读取 " + Data.Num(industryMeta, "unreadTownCount");
                 string text = "狂热运输3修改器 · v" + Protocol.Version + "\r\n\r\n" + (bridge == null ? "尚未连接" : bridge.IdentityText) + "\r\n\r\n" +
                     "可用功能：" + cards.Keys.Count(id => Data.Bool(Data.Get(caps, id), "supported")) + " / " + cards.Count +
                     "\r\n货物：" + Data.Rows(Data.Get(State, "catalog")).Count + "\r\n城镇 / 产业：" + Data.Rows(Data.Get(State, "worlds")).Count +
+                    "\r\n产业索引：" + industryText +
                     "\r\n镜头中心：" + (CameraData.HasCenter(Data.Get(State, "camera")) ? Data.Num(Data.Get(State, "camera"), "x").ToString("N1") + ", " + Data.Num(Data.Get(State, "camera"), "y").ToString("N1") : "未读取") +
                     "\r\n镜头读取错误：" + Data.Str(State, "cameraError", "无") + "\r\n有坐标的库存：" + Data.Rows(Data.Get(State, "stocks")).Count(r => CameraData.HasCenter(Data.Get(r, "position"))) +
                     "\r\n库存坐标错误：" + (Data.Rows(Data.Get(State, "stocks")).Select(r => Data.Str(r, "positionError")).FirstOrDefault(e => e.Length > 0) ?? "无") +
@@ -495,6 +513,9 @@ namespace TransportFever3Trainer
                         new { id = "33", name = "未知位置库存", category = "仓库", slots = new[] { new { index = 0, cargo = 1, mixed = true, allowed = new[] { "1", "2" }, capacity = 1000, count = 0 } } }
                     } };
                 State = Data.Obj(Data.Json.DeserializeObject(Data.Json.Serialize(preview))); UpdateState(); SelectFirst(); MinimumSize = Size.Empty;
+                IndustryRelations.Validate();
+                report.Add(new { industry = "complete supply set, rule direction, optional roles, town status, distance, pagination, stale rejection", pass = true });
+                industry.LoadPreview(IndustryRelations.Synthetic());
                 var unnamed = Data.Rows(Data.Get(State, "worlds"))[2]; string aliasKey = NameKey(unnamed), previousAlias;
                 bool hadAlias = Prefs.displayNames.TryGetValue(aliasKey, out previousAlias);
                 try
@@ -526,12 +547,19 @@ namespace TransportFever3Trainer
                 var cases = new[] { new { w = 604, h = 401, scale = 1f }, new { w = 640, h = 480, scale = 1f }, new { w = 1280, h = 720, scale = 1f },
                     new { w = 1366, h = 768, scale = 1.25f }, new { w = 1920, h = 1080, scale = 1.5f },
                     new { w = 1920, h = 1080, scale = 2f }, new { w = 2560, h = 1440, scale = 1f }, new { w = 2560, h = 1440, scale = 2f } };
+                bool industryFlowChecked = false;
                 foreach (var test in cases)
                 {
                     Ui.LayoutTestScale = test.scale; ClientSize = new Size(test.w, test.h);
                     foreach (string id in pageViews.Keys)
                     {
+                        if (id == "industry") industry.LoadPreview(IndustryRelations.Synthetic());
                         ShowPage(id); SelectFirst(); Arrange(); Application.DoEvents(); var issues = new List<string>(); Audit(this, issues);
+                        if (id == "industry" && !industryFlowChecked)
+                        {
+                            industryFlowChecked = true; industry.ValidateIndustryFlow();
+                            report.Add(new { industryFlow = "full supply list, multi-output, town rows, paging, history", pass = true });
+                        }
                         if (id == "cargo" || id == "world") catalogs.First(c => c.Kind == id).ValidateDetailScroll();
                         if (id == "cargo") catalogs.First(c => c.Kind == id).ValidateCargoLayout();
                         if (sidebar.Parent != this || navigationBar.Parent != sidebar || actions.Parent != sidebar || sidebar.Right >= pages.Left)
@@ -591,7 +619,7 @@ namespace TransportFever3Trainer
                 {
                     var text = TextRenderer.MeasureText(child.Text, child.Font, Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
                     if (text.Width > child.ClientSize.Width - Ui.Px(child, 14) || text.Height > child.ClientSize.Height)
-                        issues.Add(child.Name + " button text is clipped");
+                        issues.Add(child.Name + " [" + child.Text + "] button text is clipped (text " + text.Width + "x" + text.Height + " / client " + child.ClientSize.Width + "x" + child.ClientSize.Height + ")");
                 }
                 Audit(child, issues);
             }
@@ -610,7 +638,7 @@ namespace TransportFever3Trainer
             {
                 for (int i = 0; i < 600 && !CaptureReady; i++) await Task.Delay(50);
                 if (!CaptureReady) throw new Exception("连接失败");
-                if (cards.Count != 19 || navigation.Count != 5) throw new Exception("功能菜单数量异常");
+                if (cards.Count != 19 || navigation.Count != 6) throw new Exception("功能菜单数量异常");
                 ShowPage("features");
                 foreach (string id in new[] { "vehicle_speed", "productivity" })
                 {
