@@ -27,17 +27,20 @@ static class IndustryAudit {
     if(!Data.Bool(meta,"ok"))throw new InvalidOperationException("产业索引刷新失败："+Data.Str(meta,"message"));
     scope=Data.Str(meta,"nameScope");world=Data.Str(meta,"world");revision=(int)Data.Num(meta,"revision");
     foreach(var part in new[]{"industry","town","cargo"}){
-     int offset=0,guard=0;
+     // The cursor follows the catalogue page metadata, not the merged count,
+     // so a page that repeats an entity cannot make the loop stall.
+     int offset=0,guard=0,total=0;
      while(true){
       string reply=bridge.Query("return __SZTF3F6.dispatch({op='industry_catalog',request='audit-"+part+"-"+offset+"',offset="+offset+",limit=100,part='"+part+"'})",30000);
       var root=Data.Obj(Data.Json.DeserializeObject(reply));
       if(!Data.Bool(root,"ok"))throw new InvalidOperationException("产业目录读取失败："+Data.Str(root,"message"));
       var page=IndustryCatalogPage.Read(root,Data.Str(root,"request"),world,scope);
       IndustryRelations.Merge(index,page);
-      int total=part=="industry"?index.Industries.Count:part=="town"?index.Towns.Count:index.CargoNames.Count;
-      int expected=(int)Data.Num(Data.Get(root,"catalog"),"total");
-      if(offset>=expected||total<=offset)break;
-      offset=total;
+      total=page.Total;
+      int received=part=="industry"?page.Items.Count:part=="town"?page.Towns.Count:page.CargoNames.Count;
+      if(received<=0)break;
+      offset+=received;
+      if(offset>=total)break;
       if(++guard>10000)throw new InvalidOperationException("产业目录分页没有结束。");
      }
     }
@@ -46,7 +49,8 @@ static class IndustryAudit {
   var rows=IndustryRelations.Audit(index,"live-game");
   var report=new{
    generatedAt=DateTime.UtcNow.ToString("o"),source="live-game",revision=revision,world=world,nameScope=scope,
-   complete=index.Complete,industryCount=index.Industries.Count,townCount=index.Towns.Count,
+   complete=index.Complete,cargoCatalogueComplete=index.CargoCatalogueComplete,
+   industryCount=index.Industries.Count,townCount=index.Towns.Count,
    unreadIndustryCount=index.UnreadIndustryCount,unreadTownCount=index.UnreadTownCount,
    auditedCargoCount=rows.Count,rows=rows};
   File.WriteAllText(output,Data.Json.Serialize(report),System.Text.Encoding.UTF8);

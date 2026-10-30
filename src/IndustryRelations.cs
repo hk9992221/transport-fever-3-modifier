@@ -12,6 +12,10 @@ namespace TransportFever3Trainer
         public List<string> Roles = new List<string>();
         public List<string> Sources = new List<string>();
         public int Alternatives = 1;
+        // A role that was only reported by the aggregated official helper is
+        // not a known role, because the helper does not distinguish required,
+        // alternate and booster inputs.
+        public bool RoleKnown = true;
         public string RoleText
         {
             get
@@ -40,7 +44,7 @@ namespace TransportFever3Trainer
                     else text = "必需原料";
                     if (!labels.Contains(text)) labels.Add(text);
                 }
-                if (labels.Count == 0) return RoleText;
+                if (labels.Count == 0) return RoleKnown ? RoleText : "角色未读取";
                 return string.Join(" / ", labels.ToArray());
             }
         }
@@ -66,8 +70,24 @@ namespace TransportFever3Trainer
         // presented as "there is no such relation".
         public bool InputsKnownEmpty { get { return InputStatus == "empty"; } }
         public bool OutputsKnownEmpty { get { return OutputStatus == "empty"; } }
-        public bool InputsUncertain { get { return InputStatus == "unavailable" || InputStatus == "partial"; } }
-        public bool OutputsUncertain { get { return OutputStatus == "unavailable" || OutputStatus == "partial"; } }
+        // The role evidence is part of the direction: when the roles could
+        // not be read, the relations of that direction are not confirmed.
+        public bool InputsUncertain
+        {
+            get
+            {
+                return InputStatus == "unavailable" || InputStatus == "partial" ||
+                    RoleStatus == "unavailable" || RoleStatus == "partial";
+            }
+        }
+        public bool OutputsUncertain
+        {
+            get
+            {
+                return OutputStatus == "unavailable" || OutputStatus == "partial" ||
+                    RoleStatus == "unavailable" || RoleStatus == "partial";
+            }
+        }
     }
 
     sealed class TownNeed
@@ -253,6 +273,7 @@ namespace TransportFever3Trainer
             // it must not be removed here.
             if (!IsCargoId(id)) return;
             var reference = new IndustryCargoRef { CargoId = id, Role = Data.Str(row, "role", fallback), Group = Data.Str(row, "group") };
+            reference.RoleKnown = Data.Bool(row, "roleKnown");
             foreach (var role in Data.RowsOfIds(Data.Get(row, "roles"))) if (!reference.Roles.Contains(role)) reference.Roles.Add(role);
             foreach (var source in Data.RowsOfIds(Data.Get(row, "sources"))) if (!reference.Sources.Contains(source)) reference.Sources.Add(source);
             double alternatives = Data.Num(row, "alternatives", 1);
@@ -264,7 +285,9 @@ namespace TransportFever3Trainer
             foreach (var role in reference.Roles) if (!existing.Roles.Contains(role)) existing.Roles.Add(role);
             foreach (var source in reference.Sources) if (!existing.Sources.Contains(source)) existing.Sources.Add(source);
             if (reference.Alternatives > existing.Alternatives) existing.Alternatives = reference.Alternatives;
-            if (reference.Role == "required" || reference.Role == "output") existing.Role = reference.Role;
+            // A known role replaces an unknown one, but an unknown role never
+            // replaces a known role.
+            if (reference.RoleKnown && !existing.RoleKnown) { existing.Role = reference.Role; existing.RoleKnown = true; }
             if (existing.Group.Length == 0) existing.Group = reference.Group;
         }
 
@@ -357,7 +380,9 @@ namespace TransportFever3Trainer
                 foreach (var pair in page.CargoNames) index.CargoNames[pair.Key] = pair.Value;
             }
             index.Revision = page.Revision; index.Complete = page.Complete;
-            index.CargoCatalogueComplete = page.CargoCatalogueComplete;
+            // The catalogue is only complete once the cargo list is sealed, so
+            // the flag may only improve while the pages are merged.
+            index.CargoCatalogueComplete = index.CargoCatalogueComplete || page.CargoCatalogueComplete;
             index.IndustryCount = Math.Max(index.IndustryCount, page.IndustryCount);
             index.TownCount = Math.Max(index.TownCount, page.TownCount);
             index.CargoCount = Math.Max(index.CargoCount, page.CargoCount);
@@ -725,14 +750,16 @@ namespace TransportFever3Trainer
             }
             foreach (var town in index.Towns) foreach (var need in town.Needs) cargoIds.Add(need.CargoId);
             foreach (var id in index.CargoNames.Keys) cargoIds.Add(id);
+            // The pending counts describe the whole map, so they are computed
+            // once and reported on every row.
+            int uncertainInputs = index.Industries.Count(e => e.InputsUncertain);
+            int uncertainOutputs = index.Industries.Count(e => e.OutputsUncertain);
+            int uncertainTowns = index.Towns.Count(t => t.NeedsStatus == "unread" || t.NeedsStatus == "partial");
             foreach (var cargoId in cargoIds)
             {
                 var producers = index.Industries.Where(e => e.OutputIds.Contains(cargoId)).Select(e => e.EntityId).OrderBy(x => x).ToList();
                 var consumers = index.Industries.Where(e => e.InputIds.Contains(cargoId)).Select(e => e.EntityId).OrderBy(x => x).ToList();
                 var towns = index.Towns.Where(t => t.Need(cargoId) != null).Select(t => t.EntityId).OrderBy(x => x).ToList();
-                int uncertainInputs = index.Industries.Count(e => e.InputsUncertain);
-                int uncertainOutputs = index.Industries.Count(e => e.OutputsUncertain);
-                int uncertainTowns = index.Towns.Count(t => t.NeedsStatus == "unread" || t.NeedsStatus == "partial");
                 string verdict;
                 if (uncertainInputs > 0 || uncertainOutputs > 0 || uncertainTowns > 0) verdict = "unverified";
                 else if (consumers.Count == 0 && producers.Count == 0 && towns.Count == 0) verdict = "notInCurrentMap";
@@ -747,7 +774,8 @@ namespace TransportFever3Trainer
                     uncertainInputIndustries = uncertainInputs,
                     uncertainOutputIndustries = uncertainOutputs,
                     uncertainTowns = uncertainTowns,
-                    verdict = verdict
+                    verdict = verdict,
+                    source = source
                 });
             }
             return rows;

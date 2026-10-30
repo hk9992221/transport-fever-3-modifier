@@ -587,8 +587,11 @@ namespace TransportFever3Trainer
                 : entry.RecipeStatus == "empty" ? "该产业没有生产规则"
                 : entry.RecipeStatus == "partial" ? "配方部分读取" : "生产规则未读取";
             analysisMeta.Text = entry.TypeName + level + " · " + recipe + (entry.PositionStatus == "ok" ? "" : " · 坐标未知");
-            var inputs = entry.Inputs.GroupBy(x => x.CargoId).Select(g => { var first = g.First(); return index.CargoName(first.CargoId) + (first.Role != "required" ? "（" + first.RoleSummary + "）" : ""); }).ToList();
+            var inputs = entry.Inputs.GroupBy(x => x.CargoId).Select(g => { var first = g.First(); return index.CargoName(first.CargoId) + (first.Role != "required" || !first.RoleKnown ? "（" + first.RoleSummary + "）" : ""); }).ToList();
             var outputs = entry.Outputs.GroupBy(x => x.CargoId).Select(g => { var first = g.First(); return index.CargoName(first.CargoId) + (first.Role == "byproduct" ? "（副产品）" : ""); }).ToList();
+            // Only a confirmed empty direction may be shown as "none". A
+            // partially read direction is shown as unread, because "none"
+            // would claim that there is no relation.
             string inputState = entry.InputsKnownEmpty ? "无" : entry.InputsUncertain ? "未读取完整" : "无";
             string outputState = entry.OutputsKnownEmpty ? "无" : entry.OutputsUncertain ? "未读取完整" : "无";
             analysisTags.Text = "原料：" + (inputs.Count == 0 ? inputState : string.Join("、", inputs)) +
@@ -617,9 +620,9 @@ namespace TransportFever3Trainer
                         if (group.Direction == "input") inputList.Items.Add(item); else outputList.Items.Add(item);
                     }
                     if (inputList.Items.Count == 0)
-                        inputList.Items.Add(new ListViewItem(new[] { analysis.Entry.RecipeRead ? "该产业无需生产原料" : "生产规则未读取", "-", "-" }) { ForeColor = Theme.Muted });
+                        inputList.Items.Add(new ListViewItem(new[] { analysis.Entry.InputsKnownEmpty ? "该产业无需生产原料" : "原料规则未读取", "-", "-" }) { ForeColor = Theme.Muted });
                     if (outputList.Items.Count == 0)
-                        outputList.Items.Add(new ListViewItem(new[] { analysis.Entry.RecipeRead ? "无产物规则" : "生产规则未读取", "-", "-" }) { ForeColor = Theme.Muted });
+                        outputList.Items.Add(new ListViewItem(new[] { analysis.Entry.OutputsKnownEmpty ? "无产物规则" : "产物规则未读取", "-", "-" }) { ForeColor = Theme.Muted });
                 }
                 activeGroup = null;
                 if (groupDirection.Length > 0) activeGroup = analysis == null ? null : analysis.Groups.FirstOrDefault(g => g.Direction == groupDirection && g.CargoId == groupCargo);
@@ -665,8 +668,9 @@ namespace TransportFever3Trainer
                 if (analysis == null) { resultsTitle.Text = "选择货物分组"; resultsEmpty.Text = "选择产业后，这里会列出全部原料供应与产品去向。"; resultsEmpty.Visible = true; resultsContent.SetBounds(0, 0, 1, 1); return; }
                 if (activeGroup == null)
                 {
-                    resultsTitle.Text = analysis.Entry.RecipeRead ? "暂无上下游分组" : "生产规则未读取";
-                    resultsEmpty.Text = analysis.Entry.RecipeRead ? "该产业没有已识别的原料或产物。" : "无法读取该产业的生产规则，请刷新后重试。";
+                    bool uncertain = analysis.Entry.InputsUncertain || analysis.Entry.OutputsUncertain;
+                    resultsTitle.Text = uncertain ? "生产规则未读取完整" : "暂无上下游分组";
+                    resultsEmpty.Text = uncertain ? "该产业的生产规则只读取了一部分，无法确认它是否真的没有原料或产物。" : "该产业没有已识别的原料或产物。";
                     resultsEmpty.Visible = true; resultsContent.SetBounds(0, 0, 1, 1); return;
                 }
                 resultsTitle.Text = (activeGroup.Direction == "input" ? "原料供应 → " : "产品去向 → ") + activeGroup.CargoName;

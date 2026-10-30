@@ -329,11 +329,17 @@ local function numericKeys(list)
  table.sort(keys)
  return keys
 end
+-- Every key of a table, ordered numerically when all keys are numbers so
+-- that rule 2 comes before rule 10.
 local function sortedKeys(list)
  local keys={}
  if type(list)~='table' then return keys end
- for key in pairs(list) do keys[#keys+1]=key end
- table.sort(keys,function(a,b) return tostring(a)<tostring(b) end)
+ local allNumbers=true
+ for key in pairs(list) do
+  keys[#keys+1]=key
+  if type(key)~='number' then allNumbers=false end
+ end
+ if allNumbers then table.sort(keys) else table.sort(keys,function(a,b) return tostring(a)<tostring(b) end) end
  return keys
 end
 -- Cargo identity is confirmed by the resource catalogue of the running game.
@@ -374,8 +380,11 @@ local function cargoName(id)
  local cached=S.cargoNames[key];if cached then return cached end
  local label=nil
  local rep=api and api.res and api.res.cargoTypeRep
+ -- A getter that is not available must not hide the one behind it, so the
+ -- candidates are walked by index and every missing one is skipped.
  local candidates={rep and rep.get,rep and rep.getName}
- for _,getter in ipairs(candidates) do
+ for index=1,#candidates do
+  local getter=candidates[index]
   if isCallable(getter) then
    local ok,value=pcall(getter,tonumber(key))
    if ok then
@@ -387,11 +396,18 @@ local function cargoName(id)
  if not label then label='货物 '..key end
  S.cargoNames[key]=label;return label
 end
+-- The official helper only reports which cargo types are involved, not the
+-- role, so it never decides the role of a cargo on its own. The role comes
+-- from the rules, and the official helper only adds a second source of
+-- evidence for the same relation.
 local ROLE_RANK={required=3,output=3,alternate=2,byproduct=2,boost=1}
--- A cargo reference normally has exactly one role and one source. The extra
--- arrays are therefore only created when a second role or source actually
--- appears, so a large map does not pay for thousands of empty tables.
 local function addRole(entry,r)
+ if not entry.roleKnown then
+  -- The first known role replaces the placeholder of the official helper.
+  entry.role=r;entry.roleKnown=true
+  entry.roles=arr();entry.roles[#entry.roles+1]=r
+  return
+ end
  if entry.roles==nil then
   if entry.role==r then return end
   entry.roles=arr();entry.roles[#entry.roles+1]=entry.role;entry.roles[#entry.roles+1]=r;return
@@ -405,24 +421,35 @@ local function addSource(entry,s)
  end
  if not hasValue(entry.sources,s) then entry.sources[#entry.sources+1]=s end
 end
-local function addCargoRef(out,seen,id,role,group,source)
+ local function addCargoRef(out,seen,id,role,group,source)
  id=cargoKey(id)
  if not id then return nil end
  if not cargoAcceptable(id) then return nil end
  local entry=seen[id]
  if not entry then
-  entry={cargoId=id,role=role or 'required',group=group or '',source=source or ''}
+  entry={cargoId=id,role=role or 'required',group=group or '',source=source or '',roleKnown=false}
   seen[id]=entry;out[#out+1]=entry
  end
  local r=role or 'required'
+ if source=='official' then
+  -- The official helper does not know the role, so it only contributes the
+  -- evidence of the relation and never the role itself.
+  addSource(entry,source)
+  return entry
+ end
+ -- A role from the rules replaces the placeholder of a relation that was
+ -- first seen through the official helper.
+ if not entry.roleKnown then entry.role=r;entry.roleKnown=true
+ elseif (ROLE_RANK[r] or 1)>(ROLE_RANK[entry.role] or 1) then entry.role=r end
  addRole(entry,r)
  if source and source~='' then addSource(entry,source) end
  if group and group~='' and (entry.group=='' or entry.group==group) then entry.group=group end
- if (ROLE_RANK[r] or 1)>(ROLE_RANK[entry.role] or 1) then entry.role=r end
  return entry
 end
 -- The official helper returns a flat list of cargo ids. Nested groups are
 -- accepted as well because a group carries the same ids as its members.
+-- The result may also be a map keyed by cargo id, so the two shapes are
+-- told apart by the values and never by guessing.
 local function collectOfficial(list,out,seen,role,source)
  if type(list)~='table' then return 0 end
  local count=0
@@ -432,19 +459,33 @@ local function collectOfficial(list,out,seen,role,source)
   if not cargoAcceptable(id) then return end
   if addCargoRef(out,seen,id,role,nil,source) then count=count+1 end
  end
+ local function pushTable(value)
+  local pushed=false
+  for _,inner in ipairs(numericKeys(value)) do push(value[inner]) end
+  return pushed
+ end
  local keys=numericKeys(list)
  if #keys>0 then
-  for _,key in ipairs(keys) do
-   local value=list[key]
-   if type(value)=='table' then
-    for _,inner in ipairs(numericKeys(value)) do push(value[inner]) end
-   else push(value) end
+  local dense=true
+  for index,key in ipairs(keys) do if key~=index then dense=false;break end end
+  if dense then
+   for _,key in ipairs(keys) do
+    local value=list[key]
+    if type(value)=='table' then pushTable(value) else push(value) end
+   end
+  else
+   -- A map keyed by cargo id: the keys are the cargo ids.
+   for _,key in ipairs(keys) do
+    local id=cargoKey(key)
+    if id then
+     if not cargoAcceptable(id) then return end
+     if addCargoRef(out,seen,id,role,nil,source) then count=count+1 end
+    end
+   end
   end
  else
   for _,value in pairs(list) do
-   if type(value)=='table' then
-    for _,inner in ipairs(numericKeys(value)) do push(value[inner]) end
-   else push(value) end
+   if type(value)=='table' then pushTable(value) else push(value) end
   end
  end
  return count
@@ -454,39 +495,44 @@ local function idSet(refs)
  for _,ref in ipairs(refs or {}) do set[ref.cargoId]=true end
  return set
 end
--- Rule.output is documented as a map from cargo id to amount, but a plain
--- list of cargo ids is indistinguishable from it by shape alone. The
--- official output list decides which reading is correct.
+-- Rule.output is documented as {CargoTypeId : integer}: the keys are the
+-- cargo ids and the values are the produced amounts. A produced amount is
+-- itself a valid cargo id, so the keys always win and the official output
+-- list is never allowed to overrule them. A key that is not a cargo id
+-- makes the whole entry unparseable, because the amount must not be taken
+-- for the cargo id.
 local function pickOutputIds(raw,officialOut)
  local keyIds,valueIds={},{}
+ local invalidKey=false
  for key,value in pairs(raw) do
   local ckId=cargoKey(key)
-  if ckId then keyIds[ckId]=true end
+  if ckId then keyIds[ckId]=true else invalidKey=true end
   local cvId=cargoKey(value)
   if cvId then valueIds[cvId]=true end
  end
- local scoreA,scoreB=0,0
- for id in pairs(keyIds) do if officialOut[id] then scoreA=scoreA+1 end end
- for id in pairs(valueIds) do if officialOut[id] then scoreB=scoreB+1 end end
- if scoreB>scoreA then return valueIds end
- return keyIds
+ if invalidKey then return nil end
+ if next(keyIds)~=nil then return keyIds end
+ -- No usable key at all, so the table is a plain list of cargo ids.
+ return valueIds
 end
 -- Rules are the only documented consumption source, so every rule of every
 -- industry is read. Rule.input is a list of alternative groups: the members
 -- of one group are consumed together and the groups are alternatives of each
 -- other. Every observed role is kept, so a cargo that is required in one
 -- rule and optional in another is not collapsed into one verdict.
--- The return values are: anyCargoFound, rulesRead, unparsedCount, reason.
+-- The return values are: anyCargoFound, rulesRead, unparsedInputs,
+-- unparsedOutputs, reason. The unparsed counts are kept per direction so a
+-- malformed input does not mark the output direction as incomplete.
 local function industryRules(sl,inputs,outputs,seenIn,seenOut,officialOut)
  local rules=sl and sl.rules
- if type(rules)~='table' then return false,false,0,'生产规则不可读' end
+ if type(rules)~='table' then return false,false,0,0,'生产规则不可读' end
  local found=false
- local unparsed=0
+ local unparsedIn,unparsedOut=0,0
  local reason=''
  for _,key in ipairs(sortedKeys(rules)) do
   local rule=rules[key]
   if type(rule)~='table' then
-   unparsed=unparsed+1
+   unparsedIn=unparsedIn+1;unparsedOut=unparsedOut+1
    if reason=='' then reason='规则 '..tostring(key)..' 结构不可读' end
   else
    local groups=rule.input
@@ -500,11 +546,11 @@ local function industryRules(sl,inputs,outputs,seenIn,seenOut,officialOut)
       if type(group)=='table' then
        for _,ck in ipairs(numericKeys(group)) do
         local id=cargoKey(group[ck])
-        if id and cargoAcceptable(id) then ids[#ids+1]=id else unparsed=unparsed+1 end
+        if id and cargoAcceptable(id) then ids[#ids+1]=id else unparsedIn=unparsedIn+1 end
        end
       else
        local id=cargoKey(group)
-       if id and cargoAcceptable(id) then ids[#ids+1]=id else unparsed=unparsed+1 end
+       if id and cargoAcceptable(id) then ids[#ids+1]=id else unparsedIn=unparsedIn+1 end
       end
       local role=rule.booster==true and 'boost' or 'required'
       for _,id in ipairs(ids) do
@@ -517,7 +563,7 @@ local function industryRules(sl,inputs,outputs,seenIn,seenOut,officialOut)
       end
      end
     else
-     unparsed=unparsed+1
+     unparsedIn=unparsedIn+1
      if reason=='' then reason='规则 '..tostring(key)..' 输入结构无法解释' end
     end
    end
@@ -525,16 +571,23 @@ local function industryRules(sl,inputs,outputs,seenIn,seenOut,officialOut)
    if out~=nil then
     if type(out)=='table' then
      local chosen=pickOutputIds(out,officialOut or {})
-     for id in pairs(chosen) do
-      if cargoAcceptable(id) then
-       addCargoRef(outputs,seenOut,id,'output','rule-'..tostring(key),'rule');found=true
-      else
-       unparsed=unparsed+1
-       if reason=='' then reason='规则 '..tostring(key)..' 产物项无法解释' end
+     if chosen==nil then
+      -- The produced cargo could not be explained, so the entry is counted
+      -- as unparsed instead of guessing a cargo id.
+      unparsedOut=unparsedOut+1
+      if reason=='' then reason='规则 '..tostring(key)..' 产物项无法解释' end
+     else
+      for id in pairs(chosen) do
+       if cargoAcceptable(id) then
+        addCargoRef(outputs,seenOut,id,'output','rule-'..tostring(key),'rule');found=true
+       else
+        unparsedOut=unparsedOut+1
+        if reason=='' then reason='规则 '..tostring(key)..' 产物项无法解释' end
+       end
       end
      end
     else
-     unparsed=unparsed+1
+     unparsedOut=unparsedOut+1
      if reason=='' then reason='规则 '..tostring(key)..' 产物结构无法解释' end
     end
    end
@@ -543,16 +596,16 @@ local function industryRules(sl,inputs,outputs,seenIn,seenOut,officialOut)
      for key,value in pairs(rule.byproducts) do
       local id=cargoKey(key) or cargoKey(value)
       if id and cargoAcceptable(id) then addCargoRef(outputs,seenOut,id,'byproduct','rule-'..tostring(key),'rule');found=true
-      else unparsed=unparsed+1 end
+      else unparsedOut=unparsedOut+1 end
      end
     else
-     unparsed=unparsed+1
+     unparsedOut=unparsedOut+1
      if reason=='' then reason='规则 '..tostring(key)..' 副产物结构无法解释' end
     end
    end
   end
  end
- return found,true,unparsed,reason
+ return found,true,unparsedIn,unparsedOut,reason
 end
 -- The read status of every direction is tracked separately: a readable
 -- container does not mean that every entry was understood, and an empty
@@ -580,33 +633,39 @@ local function readRecipe(ind)
  if officialIn then collectOfficial(officialIn,inputs,seenIn,'required','official') end
  if officialOut then collectOfficial(officialOut,outputs,seenOut,'output','official') end
  local officialOutSet=idSet(outputs)
- local ruleFound,rulesRead,unparsed,ruleReason=industryRules(sl,inputs,outputs,seenIn,seenOut,officialOutSet)
+ local ruleFound,rulesRead,unparsedIn,unparsedOut,ruleReason=industryRules(sl,inputs,outputs,seenIn,seenOut,officialOutSet)
  -- The status of one direction is decided by whether the source could be
  -- read, not by whether it contained anything:
  --   verified   read and fully understood
---   empty      read and confirmed to contain no cargo of this direction
---   partial    read but at least one entry could not be explained
+ --   empty      read and confirmed to contain no cargo of this direction
+ --   partial    read but at least one entry could not be explained
  --   unavailable not read at all
  -- An empty result and a failed read must never share a status.
+ -- The rules are a first class source: a direction whose rules could not be
+ -- read is never reported as confirmed, even when the official aggregate
+ -- could be read, because the rule relations would be missing silently.
  local inputStatus,outputStatus,roleStatus
- local function directionStatus(found,officialReadable)
+ local function directionStatus(found,officialReadable,unparsed)
   if not rulesRead then
+   -- The rules were not read at all, so the rule relations of this
+   -- direction are unknown.
    if not officialReadable then return 'unavailable' end
-   return found and 'verified' or 'empty'
+   return 'partial'
   end
   if unparsed>0 then return 'partial' end
   if found then return 'verified' end
-  -- The rule set was readable but empty while the official helper failed.
-  -- An empty rule table and a rule table that was never populated look the
-  -- same, so this stays unknown instead of claiming there is no rule.
+  -- The rule set was readable but empty. An empty rule table and a rule
+  -- table that was never populated look the same, so this stays unknown
+  -- unless the official helper also confirms the empty result.
   if officialReadable then return 'empty' end
   return 'unavailable'
  end
- inputStatus=directionStatus(#inputs>0,officialIn~=nil)
- outputStatus=directionStatus(#outputs>0,officialOut~=nil)
- if rulesRead then roleStatus=unparsed>0 and 'partial' or 'verified'
+ inputStatus=directionStatus(#inputs>0,officialIn~=nil,unparsedIn)
+ outputStatus=directionStatus(#outputs>0,officialOut~=nil,unparsedOut)
+ if rulesRead then roleStatus=(unparsedIn+unparsedOut)>0 and 'partial' or 'verified'
  elseif officialIn or officialOut then roleStatus='partial'
  else roleStatus='unavailable' end
+ local unparsed=unparsedIn+unparsedOut
  local reason=officialReason
  if ruleReason~='' and reason=='' then reason=ruleReason end
  if unparsed>0 and reason=='' then reason='有 '..unparsed..' 条规则未能解释' end
@@ -640,22 +699,34 @@ local function addTownNeed(needs,seen,id,landUse,status)
  end
  if status=='active' then need.status='active' elseif status=='zero' and need.status~='active' then need.status='zero' end
 end
--- Engine.Component.Town.cargoNeeds is documented as a list of three maps
--- (residential, commercial, industrial), each mapping CargoTypeId to a
--- needed amount. The map-keyed-by-land-use shape of older builds is still
--- accepted, but every shape that cannot be explained is counted as
--- unparsed instead of being silently dropped.
--- The numeric value of LandUseType is not published, so the district number
--- is the position in the documented cargoNeeds list and the enum value
--- itself is read from api.type.LandUseType when the game exposes it.
-local function landUseSingleton(index)
- local record=api and api.type and api.type.LandUseType
- if type(record)~='table' then return nil end
- local name=({RESIDENTIAL,COMMERCIAL,INDUSTRIAL})[index]
- if not name then return nil end
- local ok,value=pcall(function()return record[name] end)
- if ok and value~=nil and type(value)~='number' then return value end
- return nil
+-- Engine.Component.Town.cargoNeeds is documented as
+-- {{{CargoTypeId, number}}}: three districts, each a list of demand groups,
+-- each group a list of {cargo type id, amount} pairs. The map keyed by
+-- cargo id and the map keyed by land use of other builds are still accepted,
+-- but every shape that cannot be explained is counted as unparsed instead
+-- of being silently dropped.
+-- The district axis is always numbered residential, commercial and
+-- industrial in that order, and the LandUseType value itself is read from
+-- api.type.enum.LandUseType when the game exposes it.
+local LAND_USE_NAMES={'RESIDENTIAL','COMMERCIAL','INDUSTRIAL'}
+local function landUseEnum()
+ S.landUseEnum=S.landUseEnum or {}
+ if S.landUseEnum.values then return S.landUseEnum end
+ local values={}
+ local record=api and api.type and api.type.enum and api.type.enum.LandUseType
+ if type(record)~='table' then record=api and api.type and api.type.LandUseType end
+ if type(record)=='table' then
+  for index,name in ipairs(LAND_USE_NAMES) do
+   local ok,value=pcall(function()return record[name] end)
+   if ok and value~=nil then values[index]=value end
+  end
+ end
+ S.landUseEnum={values=values,available=next(values)~=nil}
+ return S.landUseEnum
+end
+-- The LandUseType value of a district, used for the district centre lookup.
+local function landUseValue(index)
+ return landUseEnum().values[index]
 end
 local function readTownNeeds(town)
  local c=component(town,CT.TOWN)
@@ -663,11 +734,12 @@ local function readTownNeeds(town)
  local needs,seen={},{}
  local parsed,sawEntries,invalid=false,false,false
  local raw=c.cargoNeeds
- local function readList(list,use)
-  if type(list)~='table' then invalid=true;return end
-  if next(list)==nil then return end
+ -- A demand group is a list of {cargo type id, amount} pairs.
+ local function readGroup(group,use)
+  if type(group)~='table' then invalid=true;return end
+  if next(group)==nil then return end
   local entries=0
-  for _,entry in ipairs(list) do
+  for _,entry in ipairs(group) do
    local id,amount,status
    if type(entry)=='table' then
     id=cargoKey(entry[1] or entry.cargoType or entry.cargo)
@@ -680,19 +752,30 @@ local function readTownNeeds(town)
     addTownNeed(needs,seen,id,use,status);parsed=true;entries=entries+1
    else invalid=true end
   end
-  if entries==0 and next(list)~=nil then invalid=true end
+  if entries==0 then invalid=true end
  end
- local function readMap(map,use)
+ -- A district is a list of demand groups.
+ local function readGroups(list,use)
+  if type(list)~='table' then invalid=true;return end
+  if next(list)==nil then return end
+  local groups=0
+  for _,group in ipairs(list) do
+   if type(group)=='table' then readGroup(group,use) else invalid=true end
+   groups=groups+1
+  end
+  if groups==0 then invalid=true end
+ end
+ -- A district may also be a map from cargo type id to amount.
+ local function readDistrictMap(map,use)
   if type(map)~='table' then invalid=true;return end
   if next(map)==nil then return end
   local entries=0
   for key,value in pairs(map) do
+   -- A cargo id is never derived from an array position, so a numeric key
+   -- that is not a plausible cargo id makes the whole district unparsed.
    local id=cargoKey(key)
    local amount=tonumber(value)
-   if not id then
-    -- A list of {id, amount} pairs inside one district.
-    if type(value)=='table' then readList(value,use);return end
-    invalid=true
+   if not id then invalid=true
    else
     local status=nil
     if amount~=nil then status=amount>0 and 'active' or 'zero' end
@@ -701,22 +784,41 @@ local function readTownNeeds(town)
   end
   if entries==0 then invalid=true end
  end
+ -- The shape of one district decides how it is read. A map keyed by cargo
+ -- id has no consecutive numeric keys, so the two are told apart without
+ -- guessing a cargo id from an array index.
+ local function readDistrict(value,use)
+  if type(value)~='table' then invalid=true;return end
+  if next(value)==nil then return end
+  local keys=numericKeys(value)
+  local dense=true
+  for index,key in ipairs(keys) do if key~=index then dense=false;break end end
+  if dense then
+   -- A list of demand groups.
+   readGroups(value,use)
+  else
+   -- A map from cargo type id to amount.
+   readDistrictMap(value,use)
+  end
+ end
  local listKeys=numericKeys(raw)
  if #listKeys>0 then
   -- Documented shape: positional districts, residential, commercial and
   -- industrial in that order.
-  for _,key in ipairs(listKeys) do
+  for index,key in ipairs(listKeys) do
    sawEntries=true
-   local use=key
-   local value=raw[key]
-   if type(value)=='table' then readMap(value,use) else invalid=true end
+   local use=index
+   readDistrict(raw[key],use)
   end
  else
   -- Older shape: map from land use to a list of demand entries.
   for landUse,list in pairs(raw) do
    sawEntries=true
    local use=tonumber(landUse)
-   if use and use>=1 and use<=3 then readList(list,use) else invalid=true end
+   if use and use>=1 and use<=3 then
+    -- The list holds {cargo type id, amount} pairs.
+    readGroup(list,use)
+   else invalid=true end
   end
  end
  if not sawEntries or not invalid then return needs,'verified' end
@@ -740,8 +842,8 @@ local function districtCenter(town,landUse)
  local reasons={}
  -- The signature takes a single LandUseType value. The enum member is tried
  -- first because the numeric value of the district is not published.
- local singleton=landUseSingleton(landUse)
- local variants={{town,landUse},{town,singleton},{town,landUse,1},{town,{landUse}},{town,{singleton}}}
+ local enum=landUseValue(landUse)
+ local variants={{town,enum},{town,landUse},{town,landUse,1},{town,{landUse}},{town,{enum}}}
  for _,variant in ipairs(variants) do
   if variant[2]~=nil then
    local ok,value=pcall(fn,variant[1],variant[2],variant[3])
@@ -775,11 +877,17 @@ local function readIndustryEntry(entity,seenCargo)
   for _,entry in ipairs(list) do
    local item={cargoId=entry.cargoId,role=entry.role}
    if entry.group~='' then item.group=entry.group end
-   local roles=arr();if entry.roles then for _,r in ipairs(entry.roles) do roles[#roles+1]=r end else roles[#roles+1]=entry.role end
+   local roles=arr()
+   if entry.roles then for _,r in ipairs(entry.roles) do roles[#roles+1]=r end
+   elseif entry.roleKnown then roles[#roles+1]=entry.role end
    item.roles=roles
    local sources=arr()
-   if entry.sources then for _,s in ipairs(entry.sources) do sources[#sources+1]=s end elseif entry.source~='' then sources[#sources+1]=entry.source end
+   if entry.sources then for _,s in ipairs(entry.sources) do sources[#sources+1]=s end
+   elseif entry.source~='' then sources[#sources+1]=entry.source end
    item.sources=sources
+   -- A role that was only reported by the official helper is not a known
+   -- role, so the page must not present it as "required".
+   item.roleKnown=entry.roleKnown==true
    if entry.alternatives and entry.alternatives>1 then item.alternatives=entry.alternatives end
    out[#out+1]=item
   end
@@ -1149,8 +1257,8 @@ end
 function S.tick(active)
  local coreOK,coreError=pcall(function()funcs({'api.engine.entityExists','api.engine.getComponent','api.engine.getEntitiesWithComponent','api.engine.util.getPlayer','api.engine.util.getWorld','api.util.getApplicationTime'}) end);if not coreOK then return json({playing=false,settings={},capabilities={},message='等待地图核心接口验证',error=tostring(coreError)}) end
  local ok,player=pcall(api.engine.util.getPlayer);local w=api.engine.util.getWorld();local a=ok and component(player,CT.ACCOUNT)
- if not a then S.settings={};S.backups={};S.jobs={};S.speedBackup=nil;S.pendingFinance=nil;S.renameResult=nil;S.cargoResult=nil;S.catalog=arr();S.stocks=arr();S.worlds=arr();S.nameScope=nil;S.player=nil;S.camera={};S.cameraError='';S.cameraAt=nil;S.cameraFresh=false;S.cameraWorld=nil;S.previousCamera=nil;S.industryIndex=nil;S.industryBuild=nil;S.industryIndexWorld=nil;S.industryIndexScope=nil;S.industryRevision=nil;return json({playing=false,settings={},capabilities=S.capabilities,message='请进入可运行地图'}) end
- if S.player and (S.player~=player or S.world~=w) then S.settings={};S.backups={};S.jobs={};S.speedBackup=nil;S.renameResult=nil;S.cargoResult=nil;S.catalog=arr();S.stocks=arr();S.worlds=arr();S.nameScope=nil;S.nextScan=0;S.nextCapability=0;S.camera={};S.cameraError='';S.cameraAt=nil;S.cameraFresh=false;S.cameraWorld=nil;S.previousCamera=nil;S.industryIndex=nil;S.industryBuild=nil;S.industryIndexWorld=nil;S.industryIndexScope=nil;S.industryRevision=nil end
+ if not a then S.settings={};S.backups={};S.jobs={};S.speedBackup=nil;S.pendingFinance=nil;S.renameResult=nil;S.cargoResult=nil;S.catalog=arr();S.stocks=arr();S.worlds=arr();S.nameScope=nil;S.player=nil;S.camera={};S.cameraError='';S.cameraAt=nil;S.cameraFresh=false;S.cameraWorld=nil;S.previousCamera=nil;S.industryIndex=nil;S.industryBuild=nil;S.industryIndexWorld=nil;S.industryIndexScope=nil;S.industryRevision=nil;S.cargoCatalogue=nil;S.cargoNames=nil;S.landUseEnum=nil;return json({playing=false,settings={},capabilities=S.capabilities,message='请进入可运行地图'}) end
+ if S.player and (S.player~=player or S.world~=w) then S.settings={};S.backups={};S.jobs={};S.speedBackup=nil;S.renameResult=nil;S.cargoResult=nil;S.catalog=arr();S.stocks=arr();S.worlds=arr();S.nameScope=nil;S.nextScan=0;S.nextCapability=0;S.camera={};S.cameraError='';S.cameraAt=nil;S.cameraFresh=false;S.cameraWorld=nil;S.previousCamera=nil;S.industryIndex=nil;S.industryBuild=nil;S.industryIndexWorld=nil;S.industryIndexScope=nil;S.industryRevision=nil;S.cargoCatalogue=nil;S.cargoNames=nil;S.landUseEnum=nil end
  S.player=player;S.world=w
  if not S.nameScope then S.nameScope=string.format('%.9f:%s',now(),tostring(w)) end
  local baseOK,baseError=pcall(function()fields(a,{'balance','loan'},'ACCOUNT');fields(component(w,CT.GAME_TIME),{'gameTime','timeOfDaySec'},'GAME_TIME');fields(component(w,CT.GAME_SPEED),{'millisPerDay','speedup'},'GAME_SPEED') end);if not baseOK then return json({playing=false,settings={},capabilities={},message='当前地图组件尚未通过验证',error=tostring(baseError)}) end
