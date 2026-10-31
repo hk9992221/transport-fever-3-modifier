@@ -5,13 +5,14 @@ on:
   workflow_dispatch:
     inputs:
       package:
-        description: 发布格式（默认标准安装版）
+        description: 发布格式（both 同时生成安装版和便携版）
         type: choice
         required: true
         default: setup
         options:
           - setup
           - portable
+          - both
 
 permissions:
   contents: write
@@ -24,7 +25,7 @@ jobs:
   package:
     name: 编译并发布 Windows x64
     runs-on: windows-2022
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       TF3_PACKAGE: ${{ inputs.package || 'setup' }}
     defaults:
@@ -56,9 +57,16 @@ jobs:
 
       - name: 编译、检查并生成发布 EXE
         run: |
-          $parameters = @{ Package = $env:TF3_PACKAGE }
-          if ($env:TF3_PACKAGE -eq 'setup') { $parameters.VerifySetup = $true }
-          ./scripts/build-windows.ps1 @parameters
+          $ErrorActionPreference = 'Stop'
+          $selection = $env:TF3_PACKAGE.ToLowerInvariant()
+          if ($selection -notin @('setup', 'portable', 'both')) { throw '未知发布格式。' }
+          $formats = if ($selection -eq 'both') { @('setup', 'portable') } else { @($selection) }
+          foreach ($format in $formats) {
+            Write-Host ('[发布格式] ' + $format)
+            $parameters = @{ Package = $format }
+            if ($format -eq 'setup') { $parameters.VerifySetup = $true }
+            ./scripts/build-windows.ps1 @parameters
+          }
 
       - name: 发布到 GitHub Releases
         env:
@@ -72,17 +80,22 @@ jobs:
           $version = $match.Groups['value'].Value
           $tag = 'v' + $version
           $format = $env:TF3_PACKAGE.ToLowerInvariant()
-          if ($format -notin @('setup', 'portable')) { throw '未知发布格式。' }
-          $exe = Join-Path $env:GITHUB_WORKSPACE "dist/TransportFever3Modifier-v$version-windows-x64-$format.exe"
-          $assets = @($exe, ($exe + '.sha256'))
+          if ($format -notin @('setup', 'portable', 'both')) { throw '未知发布格式。' }
+          $formats = if ($format -eq 'both') { @('setup', 'portable') } else { @($format) }
+          $assets = @()
+          foreach ($packageFormat in $formats) {
+            $exe = Join-Path $env:GITHUB_WORKSPACE "dist/TransportFever3Modifier-v$version-windows-x64-$packageFormat.exe"
+            $assets += @($exe, ($exe + '.sha256'))
+          }
           foreach ($asset in $assets) {
             if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) {
               throw ('缺少发布附件：' + $asset)
             }
           }
+          $formatDescription = if ($format -eq 'both') { 'Setup 安装版和 Portable 单文件便携版' } elseif ($format -eq 'setup') { 'Setup 安装版' } else { 'Portable 单文件便携版' }
           $notes = Join-Path $env:RUNNER_TEMP 'tf3-release-notes.md'
           @(
-            "Windows x64 v$version。本次附件格式：$format。Setup 为标准安装版，Portable 为单文件便携版。"
+            "Windows x64 v$version。本次附件格式：$formatDescription。"
             ''
             '附件包含 EXE 与 SHA-256 校验文件，无 ZIP 发布附件。Setup 安装后直接运行已安装主程序，打开界面不会释放另一份 EXE；Portable 保留原单文件释放启动方式。'
             ''
@@ -125,3 +138,4 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw '无法读取 Release 地址。' }
           Write-Host ('Release：' + $url)
           @('', '## GitHub Release', '', $url) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
