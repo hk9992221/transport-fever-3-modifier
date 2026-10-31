@@ -277,17 +277,20 @@ probe("explicit refresh retries a failed cargo catalogue read", function()
 end)
 
 -- P8: a cargo that only exists inside a rule must still be a relation.
-probe("cargo that only exists inside a rule is still a relation", function()
+-- The rule index is sparse (8) and the aggregated helper does not mention the
+-- cargo at all, so reading the rule map by array position loses the only
+-- relation to it.
+probe("sparse rule-only cargo is still a relation", function()
     local idx = index({
         count = 2,
-        customRules = { [5001] = { [1] = { input = { { 9 } }, output = { [10] = 1 } } } },
-        customRecipes = { [5001] = { inputs = {}, outputs = { 10 } }, [5002] = { inputs = {}, outputs = { 9 } } }
+        customRules = { [5001] = { [8] = { input = { { 9 } }, output = { [10] = 1 } } } },
+        customRecipes = { [5001] = { inputs = {}, outputs = { 10 } }, [5002] = { inputs = {}, outputs = {} } }
     })
     local mill
     for _, e in ipairs(idx.industries) do if e.entityId == "1001" then mill = e end end
     local found = false
     for _, id in ipairs(mill.inputIds) do if id == "9" then found = true end end
-    expect(found, "mill inputIds=" .. ids(mill.inputs, "cargoId") .. " (the cargo only exists inside the rule)")
+    expect(found, "sparse rule-only cargo 9 was lost; mill inputIds=" .. ids(mill.inputs, "cargoId"))
 end)
 
 -- P9: cargo id 0 is a real cargo id when the resource catalogue lists it.
@@ -327,6 +330,46 @@ probe("cargo of a later industry page is still in the catalogue", function()
     for _, cargo in ipairs(S.industryIndex.cargo) do cargoIds[cargo.id] = true end
     expect(cargoIds["21"] and cargoIds["22"],
         "21=" .. tostring(cargoIds["21"]) .. " 22=" .. tostring(cargoIds["22"]))
+end)
+
+-- P12: a nested group that mixes a valid member with an unknown one must
+-- still make the direction partial, because the unknown member is lost.
+probe("nested official group unknown member makes the direction partial", function()
+    local idx = index({
+        count = 1,
+        customRules = { [5001] = {} },
+        customRecipes = { [5001] = { inputs = { { 7, unreadable = "invalid" } }, outputs = {} } }
+    })
+    local e = idx.industries[1]
+    expect(e.inputStatus == "partial",
+        "inputStatus=" .. tostring(e.inputStatus) .. ", unparsed=" .. tostring(e.unparsedRuleCount))
+end)
+
+-- P13: the same mixed group inside a rule.
+probe("nested rule group unknown member makes the direction partial", function()
+    local idx = index({
+        count = 1,
+        customRules = { [5001] = { [1] = { input = { { 7, unreadable = "invalid" } }, output = { [2] = 1 } } } },
+        customRecipes = { [5001] = { inputs = { 7 }, outputs = { 2 } } }
+    })
+    local e = idx.industries[1]
+    expect(e.inputStatus == "partial",
+        "inputStatus=" .. tostring(e.inputStatus) .. ", unparsed=" .. tostring(e.unparsedRuleCount))
+end)
+
+-- P14: reading the recipes must not clobber a host global named `_`.
+probe("reading recipes preserves the host global underscore binding", function()
+    local original = rawget(_G, "_")
+    local marker = function(text) return text end
+    _G._ = marker
+    local ok, why = pcall(function()
+        local S = newSession({ count = 1 })
+        fetch(S, "industry"); fetch(S, "town"); fetch(S, "cargo")
+    end)
+    local actual = rawget(_G, "_")
+    _G._ = original
+    expect(ok, why)
+    expect(actual == marker, "host _ changed from function to " .. type(actual) .. " (" .. tostring(actual) .. ")")
 end)
 
 print(string.format("INDUSTRY_LUA_PROBES: %d passed / %d failed", passed, failed))

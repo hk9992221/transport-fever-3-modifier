@@ -496,12 +496,19 @@ local function collectOfficial(list,out,seen,role,source)
    elseif addCargoRef(out,seen,id,role,nil,source) then count=count+1 end
   end
  elseif allTables then
-  -- A list of groups; each group is a list of cargo ids.
+  -- A list of groups; each group is a list of cargo ids. A member that is
+  -- not a cargo id keeps the group readable but makes the direction
+  -- partial, because an unexplained member must not vanish.
   for _,entry in ipairs(entries) do
    local inner=entry.value
    local innerKeys=numericKeys(inner)
    if #innerKeys==0 then unparsed=unparsed+1
-   else for _,key in ipairs(innerKeys) do push(inner[key]) end end
+   else
+    for _,key in ipairs(innerKeys) do push(inner[key]) end
+    for _,innerKey in ipairs(sortedKeys(inner)) do
+     if type(innerKey)~='number' then unparsed=unparsed+1 end
+    end
+   end
   end
  else
   -- Mixed values: keep the cargo ids that are readable and count the rest.
@@ -574,6 +581,11 @@ local function industryRules(sl,inputs,outputs,seenIn,seenOut,officialOut)
        for _,ck in ipairs(numericKeys(group)) do
         local id=refCargo(group[ck])
         if id and cargoAcceptable(id) then ids[#ids+1]=id else unparsedIn=unparsedIn+1 end
+       end
+       -- A member that is not a cargo id keeps the group readable but makes
+       -- the direction partial, because it must not vanish silently.
+       for _,ck in ipairs(sortedKeys(group)) do
+        if type(ck)~='number' then unparsedIn=unparsedIn+1 end
        end
       else
        local id=refCargo(group)
@@ -658,8 +670,16 @@ local function readRecipe(ind)
   else officialReason=tostring(a):gsub('^.-:%d+: ','') end
  else officialReason='配方读取接口不可用或未验证' end
  local officialInUnparsed,officialOutUnparsed=0,0
- if officialIn then _,officialInUnparsed=collectOfficial(officialIn,inputs,seenIn,'required','official') end
- if officialOut then _,officialOutUnparsed=collectOfficial(officialOut,outputs,seenOut,'output','official') end
+ -- The count is read into a local, never into the shared global `_`, so the
+ -- adapter cannot clobber a host binding of the same name.
+ if officialIn then
+  local officialInCount
+  officialInCount,officialInUnparsed=collectOfficial(officialIn,inputs,seenIn,'required','official')
+ end
+ if officialOut then
+  local officialOutCount
+  officialOutCount,officialOutUnparsed=collectOfficial(officialOut,outputs,seenOut,'output','official')
+ end
  local officialOutSet=idSet(outputs)
  local ruleFound,rulesRead,unparsedIn,unparsedOut,ruleReason=industryRules(sl,inputs,outputs,seenIn,seenOut,officialOutSet)
  unparsedIn=unparsedIn+officialInUnparsed
