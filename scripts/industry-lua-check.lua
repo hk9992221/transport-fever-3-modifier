@@ -33,6 +33,13 @@ local function makeMock(opts)
     for i = 1, cargoCount do
         cargoNames[i] = opts.big and string.format("Cargo%03d-long-cargo-name", i) or ("Cargo" .. i)
     end
+    -- The resource catalogue is the source of truth for cargo identity. Cargo
+    -- id 0 is the passenger id and is present in every real catalogue, so it
+    -- must survive the whole pipeline. opts.noPassengerCargo removes it to
+    -- prove that an unlisted id 0 is not silently accepted.
+    local catalogue = { [0] = "Passenger" }
+    for i = 1, cargoCount do catalogue[i] = cargoNames[i] end
+    if opts.noPassengerCargo then catalogue[0] = nil end
     local recipes, rules = {}, {}
     local industryEntities, townEntities = {}, {}
     local function matrix(x, y)
@@ -59,15 +66,35 @@ local function makeMock(opts)
         if opts.failAt == i then recipes[stockList] = false end
     end
     if not opts.big and count >= 1 then
-        rules[5001] = { { input = { { 1 } }, output = { [2] = 1 } }, { input = { { 4 } }, output = {}, booster = true } }
+        -- Engine.Component.StockList.rules is a map keyed by rule index.
+        -- Rule.input is a list of alternative groups and Rule.output is a
+        -- map from CargoTypeId to amount.
+        rules[5001] = { [1] = { input = { { 1 } }, output = { [2] = 1 } },
+                       [2] = { input = { { 4 } }, output = {}, booster = true } }
         components[5001][CT.STOCK_LIST].rules = rules[5001]
+    end
+    -- A hand written fixture lets a test control the exact rule shape of a
+    -- single industry: opts.customRules[stockList] holds its rules and
+    -- opts.customRecipes[stockList] holds its official input/output lists.
+    if opts.customRules then
+        for stockList, value in pairs(opts.customRules) do
+            components[stockList][CT.STOCK_LIST].rules = value
+            if not recipes[stockList] then recipes[stockList] = { inputs = {}, outputs = {} } end
+        end
+    end
+    if opts.customRecipes then
+        for stockList, value in pairs(opts.customRecipes) do recipes[stockList] = value end
     end
 
     local townCount = opts.towns or 2
     for i = 1, townCount do
         local entity = 2000 + i
         townEntities[#townEntities + 1] = entity
-        local needs = { [1] = { { i == 2 and 3 or 2, i == 2 and 0 or 100 } } }
+        -- Engine.Component.Town.cargoNeeds is documented as
+        -- {{{CargoTypeId, number}}}: three districts, each a list of demand
+        -- groups, each group a list of {cargo type id, amount} pairs.
+        local needs = { { { { 2, 100 } } }, { { { 3, 0 } } }, { } }
+        if i == 2 then needs = { { }, { { { 3, 50 } } }, { } } end
         if opts.unreadTown and i == townCount then needs = nil end
         add(entity, CT.TOWN, { initialLandUseCapacities = { 500, 200, 200 }, cargoNeeds = needs })
         names[entity] = "Town " .. i
@@ -79,8 +106,13 @@ local function makeMock(opts)
         if not recipe then return {}, {} end
         return recipe.inputs, recipe.outputs
     end
+    -- The district centre lookup takes a single LandUseType value. The mock
+    -- records which value it received so the test can prove that the enum
+    -- member was used instead of the positional district number.
+    local lastLandUse
     local function centerFunction(entity, landUse)
-        return { x = entity * 10 + landUse, y = landUse * 100 }
+        lastLandUse = landUse
+        return { x = entity * 10 + (type(landUse) == "number" and landUse or 0), y = (type(landUse) == "number" and landUse or 0) * 100 }
     end
     local function bind(fn)
         if opts.binding ~= "protected" then return fn end
@@ -92,13 +124,24 @@ local function makeMock(opts)
     local function stub() end
     return {
         state = state,
+        lastLandUse = function() return lastLandUse end,
         type = {
             ComponentType = CT,
             StockList = { Modifiers = { new = function() return {} end } },
             TransportVehicle = { Modifiers = { new = function() return {} end } },
             Vec5f = { new = function(...) return { ... } end },
             Date = { new = function(...) return { ... } end },
-            Mat4f = {}
+            Mat4f = {},
+            -- api.type.enum.LandUseType holds the district singletons. The
+            -- numeric value of a district is not published, so the members
+            -- are values, not numbers.
+            enum = {
+                LandUseType = {
+                    RESIDENTIAL = { name = "residential" },
+                    COMMERCIAL = { name = "commercial" },
+                    INDUSTRIAL = { name = "industrial" }
+                }
+            }
         },
         engine = {
             entityExists = function(entity) return components[entity] ~= nil end,
@@ -135,13 +178,9 @@ local function makeMock(opts)
         },
         res = {
             cargoTypeRep = {
-                getAll = function()
-                    local result = { [0] = "Passenger" }
-                    for i = 1, cargoCount do result[i] = cargoNames[i] end
-                    return result
-                end,
-                get = function(i) return { name = cargoNames[i], timeToDeliverInSeconds = 1 } end,
-                getName = function(i) return cargoNames[i] end
+                getAll = function() return catalogue end,
+                get = function(i) return { name = cargoNames[i] or catalogue[i], timeToDeliverInSeconds = 1 } end,
+                getName = function(i) return cargoNames[i] or catalogue[i] end
             },
             constructionRep = {
                 find = function() return 1 end,
@@ -247,7 +286,9 @@ do
     local industries = fetchPart(S, "industry")
     local towns = fetchPart(S, "town")
     local cargo = fetchPart(S, "cargo")
-    expect(industries == 6 and towns == 3 and cargo == 8, "basic counts mismatch")
+    -- Cargo id 0 is the passenger id and is present in the resource
+    -- catalogue, so it must survive the whole pipeline.
+    expect(industries == 6 and towns == 3 and cargo == 9, "basic counts mismatch")
     local townResult = dispatch(S, { op = "industry_catalog", request = "town-status", offset = 0, limit = 100, part = "town" })
     expect(townResult:find('"status":"active"', 1, true) ~= nil, "active town demand missing")
     expect(townResult:find('"status":"zero"', 1, true) ~= nil, "zero town demand missing")
@@ -295,7 +336,7 @@ do
     local industries = fetchPart(S, "industry")
     local towns = fetchPart(S, "town")
     local cargo = fetchPart(S, "cargo")
-    expect(industries == 100 and towns == 2 and cargo == 300, "stress counts mismatch")
+    expect(industries == 100 and towns == 2 and cargo == 301, "stress counts mismatch")
     expect(S.industryIndex and S.industryIndex.complete == true, "stress index did not complete")
 end
 
@@ -348,6 +389,314 @@ do
     expect(S.industryIndex.towns[1].needsStatus == "verified", "valid empty demand districts were marked unread")
     expect(S.industryIndex.unreadTownCount == 0, "valid empty demand districts added a pending town")
     expect(S.industryIndex.complete == true, "valid empty demand districts made the index incomplete")
+end
+
+-- 8. The scrap regression: a cargo that only exists inside a rule must be
+-- found as a downstream relation. Before the fix the official helper was the
+-- only source of the direction and the rule map was read with ipairs, which
+-- silently skipped every rule of a map that is keyed by rule index.
+do
+    local S, mock = load({
+        count = 3, towns = 1,
+        customRules = {
+            [5001] = { [1] = { input = { { 1 }, { 9 } }, output = { [10] = 2 } } },
+            [5002] = { [1] = { input = {}, output = { [9] = 1 } } },
+        },
+        customRecipes = {
+            [5001] = { inputs = { 1, 9 }, outputs = { 10 } },
+            [5002] = { inputs = {}, outputs = { 9 } },
+        }
+    })
+    fetchPart(S, "industry"); fetchPart(S, "town"); fetchPart(S, "cargo")
+    local industries = S.industryIndex.industries
+    local mill, yard
+    for _, entry in ipairs(industries) do
+        if entry.entityId == "1001" then mill = entry
+        elseif entry.entityId == "1002" then yard = entry end
+    end
+    expect(mill ~= nil and yard ~= nil, "scrap fixture industries are missing")
+    -- The consumer of the scrap must be present in the rule derived inputs.
+    local scrapInput
+    for _, input in ipairs(mill.inputs) do if input.cargoId == "9" then scrapInput = input end end
+    expect(scrapInput ~= nil, "the scrap input was lost in the rule parsing")
+    expect(#mill.inputIds == 2, "the scrap input id was lost")
+    expect(mill.inputStatus == "verified" and mill.outputStatus == "verified",
+        "the scrap rule was not fully read")
+    -- The rule has two alternative groups, so the cargo must be marked as an
+    -- alternative and the alternatives must be counted.
+    local hasAlternate = false
+    for _, role in ipairs(scrapInput.roles or {}) do if role == "alternate" then hasAlternate = true end end
+    expect(hasAlternate, "the alternative input group was not recorded")
+    expect((scrapInput.alternatives or 0) >= 2, "the number of alternative groups was not recorded")
+    -- Both the rule and the official helper are evidence for the same cargo,
+    -- so both sources must be kept.
+    local hasOfficial = false
+    local hasRule = false
+    for _, source in ipairs(scrapInput.sources or {}) do
+        if source == "official" then hasOfficial = true end
+        if source == "rule" then hasRule = true end
+    end
+    expect(hasOfficial, "the official source evidence was lost")
+    expect(hasRule, "the rule source evidence was lost")
+    expect(#(scrapInput.sources or {}) >= 2, "the source evidence of the same cargo was not merged")
+    -- The scrap producer must be recognised as producing the scrap.
+    local scrapOutput
+    for _, output in ipairs(yard.outputs) do if output.cargoId == "9" then scrapOutput = output end end
+    expect(scrapOutput ~= nil, "the scrap output was lost in the rule parsing")
+    expect(#yard.outputIds == 1 and yard.outputIds[1] == "9", "the scrap output id was lost")
+    -- A cargo that only appears in a rule must still be in the catalogue.
+    local cargoIds = {}
+    for _, cargo in ipairs(S.industryIndex.cargo) do cargoIds[cargo.id] = true end
+    expect(cargoIds["9"] == true, "the scrap cargo is missing from the catalogue")
+end
+
+-- 9. Cargo identity: the catalogue decides which ids are real cargo. A
+-- fractional id must never be rounded onto another cargo, an unknown id 0
+-- must not be accepted and a catalogue listed id 0 must survive.
+do
+    -- Cargo 0 is listed in the catalogue and is referenced by a rule, so it
+    -- must be accepted and must reach the catalogue listing.
+    local S = load({
+        count = 1, towns = 1,
+        customRules = { [5001] = { [1] = { input = { { 0 } }, output = { [2] = 1 } } } },
+        customRecipes = { [5001] = { inputs = { 0 }, outputs = { 2 } } }
+    })
+    fetchPart(S, "industry"); fetchPart(S, "town"); fetchPart(S, "cargo")
+    local cargoIds = {}
+    for _, cargo in ipairs(S.industryIndex.cargo) do cargoIds[cargo.id] = true end
+    expect(cargoIds["0"] == true, "the catalogue listed cargo id 0 was dropped")
+    expect(cargoIds["1"] == true, "cargo id 1 was dropped")
+    local entry = S.industryIndex.industries[1]
+    local found = false
+    for _, id in ipairs(entry.inputIds) do if id == "0" then found = true end end
+    expect(found, "the catalogue listed cargo id 0 was dropped from the rule")
+
+    -- Cargo 0 is not listed in the catalogue, so a rule that mentions it
+    -- must not turn it into a real cargo.
+    S = load({
+        count = 1, towns = 1, noPassengerCargo = true,
+        customRules = { [5001] = { [1] = { input = { { 0 } }, output = { [2] = 1 } } } },
+        customRecipes = { [5001] = { inputs = { 0 }, outputs = { 2 } } }
+    })
+    fetchPart(S, "industry"); fetchPart(S, "town"); fetchPart(S, "cargo")
+    cargoIds = {}
+    for _, cargo in ipairs(S.industryIndex.cargo) do cargoIds[cargo.id] = true end
+    expect(cargoIds["0"] == nil, "an unlisted cargo id 0 was accepted")
+    local unlisted = S.industryIndex.industries[1]
+    for _, id in ipairs(unlisted.inputIds) do
+        expect(id ~= "0", "an unlisted cargo id 0 became a rule input")
+    end
+end
+
+-- 9b. The cargo catalogue is only sealed once every industry was read, so
+-- a cargo that only appears in the rule of a later industry is still listed.
+-- The map is larger than one page, so the last industry is only read on the
+-- second page, and the ids are outside the resource catalogue so that only
+-- the rule can contribute them.
+do
+    local S = load({
+        count = 120, towns = 1,
+        customRules = {
+            [5120] = { [1] = { input = { { 21 } }, output = { [22] = 1 } } },
+        },
+        customRecipes = { [5120] = { inputs = { 21 }, outputs = { 22 } } }
+    })
+    fetchPart(S, "industry"); fetchPart(S, "town"); fetchPart(S, "cargo")
+    local cargoIds = {}
+    for _, cargo in ipairs(S.industryIndex.cargo) do cargoIds[cargo.id] = true end
+    expect(cargoIds["21"] == true, "a cargo of a later industry is missing from the catalogue")
+    expect(cargoIds["22"] == true, "an output cargo of a later industry is missing from the catalogue")
+end
+
+-- 10. A fractional cargo id and a non numeric id must not become a cargo.
+do
+    local S = load({
+        count = 1, towns = 1,
+        customRules = { [5001] = { [1] = { input = { { 1.5 } }, output = { ["abc"] = 1 } } } },
+        customRecipes = { [5001] = { inputs = { 1.5 }, outputs = { "abc" } } }
+    })
+    fetchPart(S, "industry"); fetchPart(S, "town"); fetchPart(S, "cargo")
+    local entry = S.industryIndex.industries[1]
+    expect(#entry.inputIds == 0, "a fractional cargo id was rounded onto another cargo")
+    expect(#entry.outputIds == 0, "a non numeric cargo id was accepted")
+    expect(entry.unparsedRuleCount > 0, "an unexplainable rule entry was not counted")
+end
+
+-- 11. The read status of each direction is separate from the other one: a
+-- readable but empty rule set is a confirmed empty result and must not be
+-- reported as an unread rule.
+do
+    local S = load({
+        count = 1, towns = 1,
+        customRules = { [5001] = { [1] = { input = {}, output = {} } } },
+        customRecipes = { [5001] = { inputs = {}, outputs = {} } }
+    })
+    fetchPart(S, "industry"); fetchPart(S, "town"); fetchPart(S, "cargo")
+    local entry = S.industryIndex.industries[1]
+    expect(entry.recipeStatus ~= "unavailable", "a readable empty rule set was reported as unread")
+    expect(entry.inputStatus == "empty" or entry.inputStatus == "verified",
+        "a readable empty input set was not reported as empty")
+    expect(S.industryIndex.unreadIndustryCount == 0, "a confirmed empty rule set was counted as unread")
+end
+
+-- 12. The town demand is read from the documented district lists of
+-- {cargo type id, amount} pairs, and the districts are residential,
+-- commercial and industrial in that order.
+do
+    local S, mock = load({ count = 1, towns = 1 })
+    local town = mock.engine.getComponent(2001, mock.type.ComponentType.TOWN)
+    town.cargoNeeds = { { { { 2, 100 } } }, { { { 3, 0 } } }, { { { 4, 7 } } } }
+    fetchPart(S, "industry"); fetchPart(S, "town"); fetchPart(S, "cargo")
+    local entry = S.industryIndex.towns[1]
+    expect(entry.needsStatus == "verified", "the documented district list was not read")
+    expect(#entry.needs == 3, "the documented district list did not yield three cargo demands")
+    local byId = {}
+    for _, need in ipairs(entry.needs) do byId[need.cargoId] = need end
+    expect(byId["2"] ~= nil and byId["2"].landUses[1] == 1, "the residential demand was not read")
+    expect(byId["3"] ~= nil and byId["3"].status == "zero", "the zero commercial demand was not read")
+    expect(byId["4"] ~= nil and byId["4"].landUses[1] == 3, "the industrial demand was not read")
+    -- The district centre lookup must use the LandUseType member, because
+    -- the numeric value of a district is not published.
+    expect(mock.lastLandUse() ~= nil and type(mock.lastLandUse()) ~= "number",
+        "the district centre was looked up with a positional number instead of the enum member")
+end
+
+-- 12b. A district that is a map from cargo type id to amount is still read,
+-- and a cargo id is never derived from an array position.
+do
+    local S, mock = load({ count = 1, towns = 1 })
+    local town = mock.engine.getComponent(2001, mock.type.ComponentType.TOWN)
+    town.cargoNeeds = { { [7] = 100 }, { [8] = 0 }, {} }
+    fetchPart(S, "industry"); fetchPart(S, "town"); fetchPart(S, "cargo")
+    local entry = S.industryIndex.towns[1]
+    expect(entry.needsStatus == "verified", "the district map was not read")
+    expect(#entry.needs == 2, "the district map did not yield two cargo demands")
+    local byId = {}
+    for _, need in ipairs(entry.needs) do byId[need.cargoId] = need end
+    expect(byId["7"] ~= nil and byId["8"] ~= nil, "the district map cargo ids were not read")
+    -- The array positions 1 and 2 must not become cargo ids.
+    expect(byId["1"] == nil and byId["2"] == nil, "an array position was mistaken for a cargo id")
+end
+
+-- 12c. A district list of pairs must not produce cargo ids from the
+-- positions of the pairs either.
+do
+    local S, mock = load({ count = 1, towns = 1 })
+    local town = mock.engine.getComponent(2001, mock.type.ComponentType.TOWN)
+    town.cargoNeeds = { { { { 11, 100 }, { 12, 50 } } }, {}, {} }
+    fetchPart(S, "industry"); fetchPart(S, "town"); fetchPart(S, "cargo")
+    local entry = S.industryIndex.towns[1]
+    expect(entry.needsStatus == "verified", "the pair list was not read")
+    local byId = {}
+    for _, need in ipairs(entry.needs) do byId[need.cargoId] = need end
+    expect(byId["11"] ~= nil and byId["12"] ~= nil, "the pair list cargo ids were not read")
+    expect(byId["1"] == nil and byId["2"] == nil, "a pair position was mistaken for a cargo id")
+end
+
+-- 12d. A district that mixes the documented pairs with a plain cargo id
+-- must still yield exactly the real cargo ids. A reader that treats the
+-- position of a demand as its cargo id would add cargo 1 and 2 here.
+do
+    local S, mock = load({ count = 1, towns = 1 })
+    local town = mock.engine.getComponent(2001, mock.type.ComponentType.TOWN)
+    town.cargoNeeds = { { { { 21, 100 } } }, { { 22, 5 } }, {} }
+    fetchPart(S, "industry"); fetchPart(S, "town"); fetchPart(S, "cargo")
+    local entry = S.industryIndex.towns[1]
+    expect(entry.needsStatus == "verified", "the mixed district was not read")
+    local byId = {}
+    for _, need in ipairs(entry.needs) do byId[need.cargoId] = need end
+    expect(byId["21"] ~= nil, "the pair demand was not read")
+    expect(byId["22"] ~= nil, "the plain cargo id demand was not read")
+    expect(byId["1"] == nil, "a demand position was mistaken for a cargo id")
+    expect(byId["2"] == nil, "a demand position was mistaken for a cargo id")
+end
+
+-- 13. Rule.output is a map from CargoTypeId to amount. The keys are the
+-- cargo ids and the values are quantities, so the values must never be
+-- mistaken for cargo ids.
+do
+    local S = load({
+        count = 1, towns = 1,
+        customRules = { [5001] = { [1] = { input = { { 1 } }, output = { [10] = 3 } } } },
+        customRecipes = { [5001] = { inputs = { 1 }, outputs = { 10 } } }
+    })
+    fetchPart(S, "industry"); fetchPart(S, "town"); fetchPart(S, "cargo")
+    local entry = S.industryIndex.industries[1]
+    expect(#entry.outputIds == 1, "the rule output map did not yield exactly one cargo")
+    expect(entry.outputIds[1] == "10", "the rule output map was read with the wrong key")
+    -- The quantity 3 must not become a cargo id.
+    for _, id in ipairs(entry.outputIds) do
+        expect(id ~= "3", "the produced amount was mistaken for a cargo id")
+    end
+end
+
+-- 13b. A produced amount that happens to be the id of another cargo must
+-- still not replace the real cargo id of the rule.
+do
+    local S = load({
+        count = 1, towns = 1,
+        customRules = { [5001] = { [1] = { input = { { 1 } }, output = { [3] = 1 } } } },
+        customRecipes = { [5001] = { inputs = { 1 }, outputs = { 3 } } }
+    })
+    fetchPart(S, "industry"); fetchPart(S, "town"); fetchPart(S, "cargo")
+    local entry = S.industryIndex.industries[1]
+    expect(#entry.outputIds == 1, "the rule output map did not yield exactly one cargo")
+    expect(entry.outputIds[1] == "3", "the produced amount was mistaken for the cargo id")
+end
+
+-- 14. The role of a cargo comes from the rules. The aggregated official
+-- helper does not know the role, so it must not label a booster or an
+-- alternate input as a required one.
+do
+    local S = load({
+        count = 1, towns = 1,
+        customRules = { [5001] = { [1] = { input = { { 4 } }, output = { [2] = 1 }, booster = true } } },
+        customRecipes = { [5001] = { inputs = { 4 }, outputs = { 2 } } }
+    })
+    fetchPart(S, "industry"); fetchPart(S, "town"); fetchPart(S, "cargo")
+    local entry = S.industryIndex.industries[1]
+    local booster
+    for _, input in ipairs(entry.inputs) do if input.cargoId == "4" then booster = input end end
+    expect(booster ~= nil, "the booster input was lost")
+    expect(booster.role == "boost", "the booster input was labelled as a required input")
+    expect(booster.roleKnown == true, "the rule derived role was not marked as known")
+end
+
+-- 15. A rule set that could not be read must never be reported as a
+-- confirmed direction, because the rule relations would be missing
+-- silently even when the official aggregate could be read.
+do
+    local S, mock = load({
+        count = 1, towns = 1,
+        customRules = { [5001] = { [1] = { input = { { 1 } }, output = { [2] = 1 } } } },
+        customRecipes = { [5001] = { inputs = { 1 }, outputs = { 2 } } }
+    })
+    -- The stock list of the industry becomes unreadable, so the rules are
+    -- gone while the official helper still works.
+    local original = mock.engine.getComponent
+    mock.engine.getComponent = function(entity, componentType)
+        if entity == 5001 and componentType == mock.type.ComponentType.STOCK_LIST then return nil end
+        return original(entity, componentType)
+    end
+    fetchPart(S, "industry"); fetchPart(S, "town"); fetchPart(S, "cargo")
+    local entry = S.industryIndex.industries[1]
+    expect(entry.inputStatus ~= "verified", "an unread rule set was reported as a verified direction")
+    expect(entry.outputStatus ~= "verified", "an unread rule set was reported as a verified direction")
+    expect(entry.roleStatus ~= "verified", "an unread rule set was reported as a verified role")
+end
+
+-- 16. The aggregated official helper may also return a map keyed by cargo
+-- id. The map shape must not be dropped.
+do
+    local S = load({
+        count = 1, towns = 1,
+        customRecipes = { [5001] = { inputs = { [5] = true }, outputs = { [6] = true } } }
+    })
+    fetchPart(S, "industry"); fetchPart(S, "town"); fetchPart(S, "cargo")
+    local entry = S.industryIndex.industries[1]
+    local found = false
+    for _, id in ipairs(entry.inputIds) do if id == "5" then found = true end end
+    expect(found, "a map shaped official result was dropped")
 end
 
 print("INDUSTRY_LUA_CHECK_OK")

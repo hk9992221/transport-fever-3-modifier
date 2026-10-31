@@ -9,6 +9,13 @@ namespace TransportFever3Trainer
     sealed class IndustryCargoRef
     {
         public string CargoId = "", Role = "required", Group = "";
+        public List<string> Roles = new List<string>();
+        public List<string> Sources = new List<string>();
+        public int Alternatives = 1;
+        // A role that was only reported by the aggregated official helper is
+        // not a known role, because the helper does not distinguish required,
+        // alternate and booster inputs.
+        public bool RoleKnown = true;
         public string RoleText
         {
             get
@@ -20,6 +27,27 @@ namespace TransportFever3Trainer
                 return "必需原料";
             }
         }
+        // Every observed role is kept, so a cargo that is required in one
+        // rule and optional in another is not collapsed into one verdict.
+        public string RoleSummary
+        {
+            get
+            {
+                var labels = new List<string>();
+                foreach (var role in Roles)
+                {
+                    string text;
+                    if (role == "alternate") text = "替代原料";
+                    else if (role == "boost") text = "可选 / 增产材料";
+                    else if (role == "byproduct") text = "副产品";
+                    else if (role == "output") text = "产物";
+                    else text = "必需原料";
+                    if (!labels.Contains(text)) labels.Add(text);
+                }
+                if (labels.Count == 0) return RoleKnown ? RoleText : "角色未读取";
+                return string.Join(" / ", labels.ToArray());
+            }
+        }
     }
 
     sealed class IndustryEntry
@@ -28,6 +56,8 @@ namespace TransportFever3Trainer
         public string EntityId = "", ConstructionId = "", StockListId = "", TypeKey = "unknown", TypeName = "类型未识别";
         public string GameName = "", Name = "产业", PositionStatus = "unknown", PositionError = "", PositionSource = "";
         public string RecipeStatus = "unavailable", RecipeError = "";
+        public string InputStatus = "unavailable", OutputStatus = "unavailable", RoleStatus = "unavailable";
+        public int UnparsedRuleCount;
         public bool RolesVerified;
         public int Level, MaxLevel;
         public double X = double.NaN, Y = double.NaN;
@@ -35,6 +65,29 @@ namespace TransportFever3Trainer
         public List<string> InputIds = new List<string>(), OutputIds = new List<string>();
         public bool HasPosition { get { return IndustryRelations.Finite(X) && IndustryRelations.Finite(Y); } }
         public bool RecipeRead { get { return RecipeStatus != "unavailable"; } }
+        // A direction is only known to be empty when it was read and no cargo
+        // was found. An unread or partially read direction must never be
+        // presented as "there is no such relation".
+        public bool InputsKnownEmpty { get { return InputStatus == "empty"; } }
+        public bool OutputsKnownEmpty { get { return OutputStatus == "empty"; } }
+        // The role evidence is part of the direction: when the roles could
+        // not be read, the relations of that direction are not confirmed.
+        public bool InputsUncertain
+        {
+            get
+            {
+                return InputStatus == "unavailable" || InputStatus == "partial" ||
+                    RoleStatus == "unavailable" || RoleStatus == "partial";
+            }
+        }
+        public bool OutputsUncertain
+        {
+            get
+            {
+                return OutputStatus == "unavailable" || OutputStatus == "partial" ||
+                    RoleStatus == "unavailable" || RoleStatus == "partial";
+            }
+        }
     }
 
     sealed class TownNeed
@@ -62,6 +115,7 @@ namespace TransportFever3Trainer
     {
         public int Revision;
         public bool Complete;
+        public bool CargoCatalogueComplete;
         public int IndustryCount, TownCount, CargoCount, UnreadIndustryCount, UnreadTownCount;
         public double GeneratedAt;
         public readonly List<IndustryEntry> Industries = new List<IndustryEntry>();
@@ -75,7 +129,8 @@ namespace TransportFever3Trainer
         public void Reset()
         {
             Industries.Clear(); Towns.Clear(); CargoNames.Clear();
-            Revision = 0; Complete = false; IndustryCount = TownCount = CargoCount = UnreadIndustryCount = UnreadTownCount = 0; GeneratedAt = 0;
+            Revision = 0; Complete = false; CargoCatalogueComplete = false;
+            IndustryCount = TownCount = CargoCount = UnreadIndustryCount = UnreadTownCount = 0; GeneratedAt = 0;
         }
     }
 
@@ -101,6 +156,7 @@ namespace TransportFever3Trainer
     sealed class IndustryGroup
     {
         public string CargoId = "", CargoName = "", Direction = "output", TownRuleState = "none", TownRuleText = "", Role = "", RoleText = "";
+        public string SupplyState = "unknown", SupplyText = "", DownstreamState = "unknown", DownstreamText = "";
         public readonly List<IndustryCandidate> Industries = new List<IndustryCandidate>();
         public readonly List<IndustryCandidate> Towns = new List<IndustryCandidate>();
         public int Total { get { return Industries.Count + Towns.Count; } }
@@ -129,6 +185,7 @@ namespace TransportFever3Trainer
     {
         public int Revision;
         public bool Complete;
+        public bool CargoCatalogueComplete;
         public string Part = "industry";
         public int IndustryCount, TownCount, CargoCount, UnreadIndustryCount, UnreadTownCount, Offset, Total;
         public double GeneratedAt;
@@ -148,6 +205,7 @@ namespace TransportFever3Trainer
             {
                 Revision = (int)Data.Num(catalog, "revision", Data.Num(root, "revision", 0)),
                 Complete = Data.Bool(catalog, "complete"),
+                CargoCatalogueComplete = Data.Bool(catalog, "cargoCatalogueComplete"),
                 Part = Data.Str(catalog, "part", "industry"),
                 IndustryCount = (int)Data.Num(catalog, "industryCount"),
                 TownCount = (int)Data.Num(catalog, "townCount"),
@@ -187,6 +245,10 @@ namespace TransportFever3Trainer
                 PositionSource = Data.Str(row, "positionSource"),
                 RecipeStatus = Data.Str(row, "recipeStatus", "unavailable"),
                 RecipeError = Data.Str(row, "recipeError"),
+                InputStatus = Data.Str(row, "inputStatus", "unavailable"),
+                OutputStatus = Data.Str(row, "outputStatus", "unavailable"),
+                RoleStatus = Data.Str(row, "roleStatus", "unavailable"),
+                UnparsedRuleCount = (int)Data.Num(row, "unparsedRuleCount"),
                 RolesVerified = Data.Bool(row, "rolesVerified"),
                 Level = (int)Data.Num(row, "level"),
                 MaxLevel = (int)Data.Num(row, "maxLevel")
@@ -205,11 +267,39 @@ namespace TransportFever3Trainer
         static void AddCargo(List<IndustryCargoRef> list, Dictionary<string, object> row, string fallback)
         {
             string id = Data.Str(row, "cargoId");
-            if (id.Length == 0 || id == "0") return;
+            // A cargo id is only dropped when it is not a number at all. The
+            // id 0 is a legitimate cargo id (the passenger cargo) and the
+            // resource catalogue of the game decides whether it exists, so
+            // it must not be removed here.
+            if (!IsCargoId(id)) return;
             var reference = new IndustryCargoRef { CargoId = id, Role = Data.Str(row, "role", fallback), Group = Data.Str(row, "group") };
+            reference.RoleKnown = Data.Bool(row, "roleKnown");
+            foreach (var role in Data.RowsOfIds(Data.Get(row, "roles"))) if (!reference.Roles.Contains(role)) reference.Roles.Add(role);
+            foreach (var source in Data.RowsOfIds(Data.Get(row, "sources"))) if (!reference.Sources.Contains(source)) reference.Sources.Add(source);
+            double alternatives = Data.Num(row, "alternatives", 1);
+            reference.Alternatives = alternatives >= 1 && alternatives <= 64 ? (int)alternatives : 1;
             var existing = list.FirstOrDefault(x => x.CargoId == id);
-            if (existing == null) list.Add(reference);
-            else if (reference.Role == "required") existing.Role = reference.Role;
+            if (existing == null) { list.Add(reference); return; }
+            // Evidence from another source must be merged, never overwrite the
+            // role and source evidence that was already collected.
+            foreach (var role in reference.Roles) if (!existing.Roles.Contains(role)) existing.Roles.Add(role);
+            foreach (var source in reference.Sources) if (!existing.Sources.Contains(source)) existing.Sources.Add(source);
+            if (reference.Alternatives > existing.Alternatives) existing.Alternatives = reference.Alternatives;
+            // A known role replaces an unknown one, but an unknown role never
+            // replaces a known role.
+            if (reference.RoleKnown && !existing.RoleKnown) { existing.Role = reference.Role; existing.RoleKnown = true; }
+            if (existing.Group.Length == 0) existing.Group = reference.Group;
+        }
+
+        // A cargo id must be a non-negative integer. A fractional value is
+        // never rounded onto another cargo and a non-numeric value is not an
+        // id at all.
+        public static bool IsCargoId(string id)
+        {
+            if (id == null || id.Length == 0) return false;
+            foreach (char c in id) if (c < '0' || c > '9') return false;
+            if (id.Length > 9) return false;
+            return true;
         }
 
         static TownEntry ReadTown(Dictionary<string, object> row)
@@ -228,7 +318,7 @@ namespace TransportFever3Trainer
             foreach (var needRow in Data.Rows(Data.Get(row, "needs")))
             {
                 string id = Data.Str(needRow, "cargoId");
-                if (id.Length == 0 || id == "0") continue;
+                if (!IndustryCatalogPage.IsCargoId(id)) continue;
                 var need = new TownNeed { CargoId = id, Status = Data.Str(needRow, "status", "unknown") };
                 var uses = Data.Get(needRow, "landUses") as object[];
                 if (uses != null) foreach (var value in uses)
@@ -290,6 +380,9 @@ namespace TransportFever3Trainer
                 foreach (var pair in page.CargoNames) index.CargoNames[pair.Key] = pair.Value;
             }
             index.Revision = page.Revision; index.Complete = page.Complete;
+            // The catalogue is only complete once the cargo list is sealed, so
+            // the flag may only improve while the pages are merged.
+            index.CargoCatalogueComplete = index.CargoCatalogueComplete || page.CargoCatalogueComplete;
             index.IndustryCount = Math.Max(index.IndustryCount, page.IndustryCount);
             index.TownCount = Math.Max(index.TownCount, page.TownCount);
             index.CargoCount = Math.Max(index.CargoCount, page.CargoCount);
@@ -327,7 +420,7 @@ namespace TransportFever3Trainer
         static string RoleText(IEnumerable<IndustryCargoRef> refs, string cargoId)
         {
             var reference = refs.FirstOrDefault(x => x.CargoId == cargoId);
-            return reference == null ? "必需原料" : reference.RoleText;
+            return reference == null ? "必需原料" : reference.RoleSummary;
         }
 
         public static IndustryAnalysis Analyze(IndustryEntry analysis, IndustryIndex index)
@@ -337,7 +430,7 @@ namespace TransportFever3Trainer
             foreach (var cargoId in inputIds)
             {
                 var inputRef = analysis.Inputs.First(x => x.CargoId == cargoId);
-                var group = new IndustryGroup { CargoId = cargoId, CargoName = index.CargoName(cargoId), Direction = "input", TownRuleState = "none", Role = inputRef.Role, RoleText = inputRef.RoleText };
+                var group = new IndustryGroup { CargoId = cargoId, CargoName = index.CargoName(cargoId), Direction = "input", TownRuleState = "none", Role = inputRef.Role, RoleText = inputRef.RoleSummary };
                 foreach (var supplier in index.Industries)
                 {
                     if (supplier.EntityId == analysis.EntityId || !supplier.OutputIds.Contains(cargoId)) continue;
@@ -353,13 +446,31 @@ namespace TransportFever3Trainer
                     group.Industries.Add(candidate);
                 }
                 group.Industries.Sort(CompareCandidates);
+                // A supplier list is only complete when every industry on the
+                // map was read. Otherwise the missing suppliers are unknown,
+                // not absent.
+                int uncertainSuppliers = index.Industries.Count(e => e.OutputsUncertain);
+                if (group.Industries.Count == 0)
+                {
+                    group.SupplyState = uncertainSuppliers > 0 ? "unread" : "none";
+                    group.SupplyText = uncertainSuppliers > 0
+                        ? "尚未确认供应该原料的产业，" + uncertainSuppliers + " 座产业的产物规则未读取，结果可能不完整。"
+                        : "当前地图未找到生产该原料的产业。";
+                }
+                else
+                {
+                    group.SupplyState = uncertainSuppliers > 0 ? "partial" : "complete";
+                    group.SupplyText = uncertainSuppliers > 0
+                        ? "已确认 " + group.Industries.Count + " 个供应产业，另有 " + uncertainSuppliers + " 座产业的产物规则未读取，结果可能不完整。"
+                        : "全部供应产业按直线距离由近到远排列。";
+                }
                 result.Groups.Add(group);
             }
             var outputIds = new List<string>(); foreach (var reference in analysis.Outputs) if (!outputIds.Contains(reference.CargoId)) outputIds.Add(reference.CargoId);
             foreach (var cargoId in outputIds)
             {
                 var outputRef = analysis.Outputs.First(x => x.CargoId == cargoId);
-                var group = new IndustryGroup { CargoId = cargoId, CargoName = index.CargoName(cargoId), Direction = "output", Role = outputRef.Role, RoleText = outputRef.RoleText };
+                var group = new IndustryGroup { CargoId = cargoId, CargoName = index.CargoName(cargoId), Direction = "output", Role = outputRef.Role, RoleText = outputRef.RoleSummary };
                 foreach (var consumer in index.Industries)
                 {
                     if (consumer.EntityId == analysis.EntityId || !consumer.InputIds.Contains(cargoId)) continue;
@@ -389,6 +500,25 @@ namespace TransportFever3Trainer
                 }
                 group.Industries.Sort(CompareCandidates);
                 group.Towns.Sort(CompareCandidates);
+                // The downstream list is only complete when every industry on
+                // the map was read. A failure to read another industry's
+                // inputs must not be reported as "this product has no
+                // downstream".
+                int uncertainConsumers = index.Industries.Count(e => e.InputsUncertain);
+                if (group.Industries.Count == 0)
+                {
+                    group.DownstreamState = uncertainConsumers > 0 ? "unread" : "none";
+                    group.DownstreamText = uncertainConsumers > 0
+                        ? "尚未确认下游产业，" + uncertainConsumers + " 座产业的原料规则未读取，结果可能不完整。"
+                        : "当前地图未找到消耗该产品的产业。";
+                }
+                else
+                {
+                    group.DownstreamState = uncertainConsumers > 0 ? "partial" : "complete";
+                    group.DownstreamText = uncertainConsumers > 0
+                        ? "已确认 " + group.Industries.Count + " 个下游产业，另有 " + uncertainConsumers + " 座产业的原料规则未读取，结果可能不完整。"
+                        : "";
+                }
                 if (group.Towns.Count > 0) { group.TownRuleState = "ready"; group.TownRuleText = "当前地图已确认相关城镇需求。"; }
                 else if (index.UnreadTownCount > 0 || (index.TownCount == 0 && !index.Complete) || index.Towns.Any(t => t.NeedsStatus == "unread" || t.NeedsStatus == "partial"))
                 {
@@ -447,7 +577,7 @@ namespace TransportFever3Trainer
 
         public static IndustryIndex Synthetic()
         {
-            var index = new IndustryIndex { Revision = 7, Complete = true, GeneratedAt = 1000 };
+            var index = new IndustryIndex { Revision = 7, Complete = true, CargoCatalogueComplete = true, GeneratedAt = 1000 };
             index.CargoNames["1"] = "小麦"; index.CargoNames["2"] = "肉"; index.CargoNames["3"] = "羊毛"; index.CargoNames["4"] = "工具";
             index.CargoNames["5"] = "木板"; index.CargoNames["6"] = "燃料"; index.CargoNames["7"] = "沙发"; index.CargoNames["8"] = "面粉";
             var farm = new IndustryEntry { EntityId = "20", TypeKey = "farm", TypeName = "畜牧场", GameName = "北原畜牧场", Name = "北原畜牧场", RecipeStatus = "verified", RolesVerified = true, X = 0, Y = 0 };
@@ -496,6 +626,171 @@ namespace TransportFever3Trainer
             var need = new TownNeed { CargoId = cargo, Status = status }; need.LandUses.Add(landUse); town.Needs.Add(need);
             town.Districts.Add(new TownDistrict { LandUse = landUse, X = x, Y = y });
             return town;
+        }
+
+        // The scrap-style regression: a producer and a consumer of the same
+        // cargo that only appears in a rule. The consumer must be found, the
+        // cargo id must survive the whole pipeline and the warehouse must not
+        // become a relation.
+        public static IndustryIndex ScrapFixture()
+        {
+            var index = new IndustryIndex { Revision = 11, Complete = true, CargoCatalogueComplete = true, GeneratedAt = 2000 };
+            index.CargoNames["0"] = "旅客";
+            index.CargoNames["1"] = "铁矿石";
+            index.CargoNames["9"] = "废料";
+            index.CargoNames["10"] = "钢材";
+            var mill = new IndustryEntry { EntityId = "1001", TypeKey = "steel_mill", TypeName = "钢铁厂", GameName = "钢铁厂", Name = "钢铁厂",
+                RecipeStatus = "verified", RolesVerified = true, InputStatus = "verified", OutputStatus = "verified", RoleStatus = "verified",
+                X = 10, Y = 10, PositionStatus = "ok" };
+            mill.Inputs.Add(new IndustryCargoRef { CargoId = "1", Role = "required", Roles = new List<string> { "required" }, Sources = new List<string> { "rule" } });
+            mill.Inputs.Add(new IndustryCargoRef { CargoId = "9", Role = "required", Roles = new List<string> { "required", "alternate" }, Sources = new List<string> { "rule" }, Alternatives = 2 });
+            mill.Outputs.Add(new IndustryCargoRef { CargoId = "10", Role = "output", Roles = new List<string> { "output" }, Sources = new List<string> { "rule" } });
+            mill.InputIds.Add("1"); mill.InputIds.Add("9"); mill.OutputIds.Add("10");
+            index.Industries.Add(mill);
+            var yard = new IndustryEntry { EntityId = "1002", TypeKey = "scrap_yard", TypeName = "废料场", GameName = "废料场", Name = "废料场",
+                RecipeStatus = "verified", RolesVerified = true, InputStatus = "empty", OutputStatus = "verified", RoleStatus = "verified",
+                X = 50, Y = 50, PositionStatus = "ok" };
+            yard.Outputs.Add(new IndustryCargoRef { CargoId = "9", Role = "output", Roles = new List<string> { "output" }, Sources = new List<string> { "official" } });
+            yard.OutputIds.Add("9");
+            index.Industries.Add(yard);
+            // A warehouse can store scrap but does not consume it, so it must
+            // never appear as a downstream industry.
+            var warehouse = new IndustryEntry { EntityId = "1003", TypeKey = "warehouse", TypeName = "仓库", GameName = "仓库", Name = "仓库",
+                RecipeStatus = "empty", InputStatus = "empty", OutputStatus = "empty", RoleStatus = "verified", X = 70, Y = 70, PositionStatus = "ok" };
+            index.Industries.Add(warehouse);
+            index.IndustryCount = index.Industries.Count;
+            return index;
+        }
+
+        // Every direction of every industry must report whether it was read,
+        // and a result set must never claim completeness while part of the
+        // map is still unread.
+        public static void ValidateCompleteness()
+        {
+            var index = ScrapFixture();
+            var mill = index.Find("1001");
+            // The mill consumes scrap, so the scrap group of the mill must
+            // list the scrap yard as the supplier.
+            var millAnalysis = Analyze(mill, index);
+            var scrapInput = millAnalysis.Inputs.FirstOrDefault(g => g.CargoId == "9");
+            if (scrapInput == null) throw new InvalidOperationException("消耗的废料没有生成原料分组。");
+            if (scrapInput.Industries.Count != 1 || scrapInput.Industries[0].TargetId != "1002")
+                throw new InvalidOperationException("生产废料的产业没有被识别为原料供应产业。");
+            if (scrapInput.Industries.Any(c => c.TargetId == "1003"))
+                throw new InvalidOperationException("可存放该货物的仓库被误识别为供应产业。");
+            // Nothing consumes the steel, so the steel group must be an
+            // empty downstream and must not borrow another relation.
+            var steel = millAnalysis.Outputs.FirstOrDefault(g => g.CargoId == "10");
+            if (steel == null) throw new InvalidOperationException("产物钢材没有生成分组。");
+            if (steel.Industries.Count != 0) throw new InvalidOperationException("钢材被误判为有下游产业。");
+            if (steel.DownstreamState != "none") throw new InvalidOperationException("完整读取后的空结果被误标为待核验。");
+
+            var yard = Analyze(index.Find("1002"), index);
+            var scrapGroup = yard.Outputs.First(g => g.CargoId == "9");
+            if (scrapGroup.Industries.Count != 1 || scrapGroup.Industries[0].TargetId != "1001")
+                throw new InvalidOperationException("废料的消费产业没有被识别。");
+            if (scrapGroup.Industries.Any(c => c.TargetId == "1003"))
+                throw new InvalidOperationException("可存放该货物的仓库被误识别为消费产业。");
+            if (!scrapGroup.Industries[0].Relation.Contains("替代原料"))
+                throw new InvalidOperationException("同一货物的多来源角色证据被覆盖。");
+
+            // An unread rule elsewhere on the map must not look like "there
+            // is no downstream".
+            var uncertain = new IndustryIndex { Revision = 12, Complete = false, CargoCatalogueComplete = true };
+            uncertain.CargoNames["9"] = "废料";
+            var producer = new IndustryEntry { EntityId = "2001", TypeName = "废料场", RecipeStatus = "verified", InputStatus = "empty", OutputStatus = "verified", RoleStatus = "verified" };
+            producer.Outputs.Add(new IndustryCargoRef { CargoId = "9", Role = "output" }); producer.OutputIds.Add("9");
+            uncertain.Industries.Add(producer);
+            var broken = new IndustryEntry { EntityId = "2002", TypeName = "状态未知加工厂", RecipeStatus = "unavailable", InputStatus = "unavailable", OutputStatus = "unavailable", RoleStatus = "unavailable" };
+            uncertain.Industries.Add(broken);
+            var unknown = Analyze(producer, uncertain);
+            var unknownGroup = unknown.Outputs.First(g => g.CargoId == "9");
+            if (unknownGroup.Industries.Count != 0) throw new InvalidOperationException("未读取的产业被当成了消费产业。");
+            if (unknownGroup.DownstreamState != "unread")
+                throw new InvalidOperationException("未读取完整时没有把下游状态标记为待核验。");
+            if (!unknownGroup.DownstreamText.Contains("未读取"))
+                throw new InvalidOperationException("未读取完整时没有给出待核验说明。");
+
+            // A fully read map with no consumer is a confirmed empty result.
+            var complete = new IndustryIndex { Revision = 13, Complete = true, CargoCatalogueComplete = true };
+            complete.CargoNames["9"] = "废料";
+            var onlyProducer = new IndustryEntry { EntityId = "3001", TypeName = "废料场", RecipeStatus = "verified", InputStatus = "empty", OutputStatus = "verified", RoleStatus = "verified" };
+            onlyProducer.Outputs.Add(new IndustryCargoRef { CargoId = "9", Role = "output" }); onlyProducer.OutputIds.Add("9");
+            complete.Industries.Add(onlyProducer);
+            var confirmed = Analyze(onlyProducer, complete);
+            var confirmedGroup = confirmed.Outputs.First(g => g.CargoId == "9");
+            if (confirmedGroup.DownstreamState != "none")
+                throw new InvalidOperationException("完整读取后的空结果被误标为待核验。");
+
+            // Cargo id 0 is a real cargo id and must not be filtered away.
+            var zeroPage = Data.Json.DeserializeObject("{\"ok\":true,\"request\":\"z1\",\"world\":\"1\",\"nameScope\":\"m1\",\"revision\":4,\"catalog\":{\"revision\":4,\"part\":\"industry\",\"industryCount\":1,\"townCount\":0,\"cargoCount\":2,\"offset\":0,\"total\":1,\"items\":[{\"entityId\":\"1\",\"typeName\":\"农场\",\"recipeStatus\":\"verified\",\"inputStatus\":\"verified\",\"outputStatus\":\"verified\",\"roleStatus\":\"verified\",\"inputs\":[{\"cargoId\":\"0\",\"role\":\"required\",\"roles\":[\"required\"],\"sources\":[\"rule\"]}],\"outputs\":[]}]}}");
+            var zeroParsed = IndustryCatalogPage.Read(zeroPage, "z1", "1", "m1");
+            if (zeroParsed.Items[0].InputIds.Count != 1 || zeroParsed.Items[0].InputIds[0] != "0")
+                throw new InvalidOperationException("合法的货物编号 0 被跨层丢弃。");
+            if (!IndustryCatalogPage.IsCargoId("0") || IndustryCatalogPage.IsCargoId("1.5") || IndustryCatalogPage.IsCargoId("-2") || IndustryCatalogPage.IsCargoId("abc") || IndustryCatalogPage.IsCargoId(""))
+                throw new InvalidOperationException("货物编号的合法性判断不正确。");
+            // A fractional id must not be rounded onto another cargo.
+            var fractional = Data.Json.DeserializeObject("{\"ok\":true,\"request\":\"z2\",\"world\":\"1\",\"nameScope\":\"m1\",\"revision\":4,\"catalog\":{\"revision\":4,\"part\":\"industry\",\"industryCount\":1,\"townCount\":0,\"cargoCount\":0,\"offset\":0,\"total\":1,\"items\":[{\"entityId\":\"1\",\"typeName\":\"农场\",\"inputs\":[{\"cargoId\":\"1.5\",\"role\":\"required\"}],\"outputs\":[]}]}}");
+            var fractionalParsed = IndustryCatalogPage.Read(fractional, "z2", "1", "m1");
+            if (fractionalParsed.Items[0].InputIds.Count != 0)
+                throw new InvalidOperationException("非法的小数货物编号被取整成了另一个货物。");
+        }
+
+        // A machine readable audit of the current index: for every cargo the
+        // producing, consuming and town candidate sets are listed together
+        // with the read status that produced them.
+        //
+        // This is a checklist of the actual sets, not an independent
+        // verification. Proving that a relation is missing needs a separately
+        // verified expected set, so the verdict only claims that the sets are
+        // self consistent under a complete read.
+        public const string AuditMethod =
+            "actual-sets-only: verdict is selfConsistent/notInCurrentMap/unverified; an independent expected set is required to detect missing or extra relations";
+        public static List<object> Audit(IndustryIndex index, string source)
+        {
+            var rows = new List<object>();
+            var cargoIds = new SortedSet<string>();
+            foreach (var entry in index.Industries)
+            {
+                foreach (var id in entry.InputIds) cargoIds.Add(id);
+                foreach (var id in entry.OutputIds) cargoIds.Add(id);
+            }
+            foreach (var town in index.Towns) foreach (var need in town.Needs) cargoIds.Add(need.CargoId);
+            foreach (var id in index.CargoNames.Keys) cargoIds.Add(id);
+            // The pending counts describe the whole map, so they are computed
+            // once and reported on every row. A page that could not be read,
+            // an incomplete scan and an unread cargo catalogue all make the
+            // map-wide evidence insufficient, so no cargo can be called
+            // consistent in that state.
+            int uncertainInputs = index.Industries.Count(e => e.InputsUncertain);
+            int uncertainOutputs = index.Industries.Count(e => e.OutputsUncertain);
+            int uncertainTowns = index.Towns.Count(t => t.NeedsStatus == "unread" || t.NeedsStatus == "partial");
+            bool mapComplete = index.Complete && index.CargoCatalogueComplete;
+            foreach (var cargoId in cargoIds)
+            {
+                var producers = index.Industries.Where(e => e.OutputIds.Contains(cargoId)).Select(e => e.EntityId).OrderBy(x => x).ToList();
+                var consumers = index.Industries.Where(e => e.InputIds.Contains(cargoId)).Select(e => e.EntityId).OrderBy(x => x).ToList();
+                var towns = index.Towns.Where(t => t.Need(cargoId) != null).Select(t => t.EntityId).OrderBy(x => x).ToList();
+                string verdict;
+                if (!mapComplete || uncertainInputs > 0 || uncertainOutputs > 0 || uncertainTowns > 0) verdict = "unverified";
+                else if (consumers.Count == 0 && producers.Count == 0 && towns.Count == 0) verdict = "notInCurrentMap";
+                else verdict = "selfConsistent";
+                rows.Add(new
+                {
+                    cargoId = cargoId,
+                    cargoName = index.CargoNames.ContainsKey(cargoId) ? index.CargoNames[cargoId] : "货物 " + cargoId,
+                    producers = producers,
+                    consumers = consumers,
+                    townCandidates = towns,
+                    uncertainInputIndustries = uncertainInputs,
+                    uncertainOutputIndustries = uncertainOutputs,
+                    uncertainTowns = uncertainTowns,
+                    mapComplete = mapComplete,
+                    verdict = verdict,
+                    source = source
+                });
+            }
+            return rows;
         }
 
         public static void Validate()
@@ -558,6 +853,34 @@ namespace TransportFever3Trainer
             if (!parts.CargoNames.ContainsKey("2")) throw new InvalidOperationException("分片合并后缺少货物 2。");
             if (parts.Industries.Count != 1 || parts.Towns.Count != 1 || parts.CargoCount != 1 || parts.CargoNames["2"] != "肉" || parts.Revision != partsRevision)
                 throw new InvalidOperationException("产业、城镇与货物分片没有合并为完整索引。");
+            ValidateCompleteness();
+
+            // The audit output must be machine readable and must classify every
+            // cargo of the map.
+            var audit = Audit(index, "offline");
+            if (audit.Count == 0) throw new InvalidOperationException("审计没有产生任何货物记录。");
+            var serialized = Data.Json.Serialize(audit);
+            if (!serialized.Contains("\"verdict\"") || !serialized.Contains("\"consumers\"") || !serialized.Contains("\"producers\""))
+                throw new InvalidOperationException("审计结果缺少货物集合或结论字段。");
+            var auditRows = Data.Rows(Data.Json.DeserializeObject(serialized));
+            if (auditRows.Count != audit.Count) throw new InvalidOperationException("审计结果无法按 JSON 读回。");
+            foreach (var row in auditRows)
+            {
+                string verdict = Data.Str(row, "verdict");
+                if (verdict != "selfConsistent" && verdict != "notInCurrentMap" && verdict != "unverified")
+                    throw new InvalidOperationException("审计结论取值不在规格允许的范围内。");
+                if (Data.Str(row, "cargoId").Length == 0) throw new InvalidOperationException("审计记录缺少货物编号。");
+            }
+            // An incomplete map must never produce a self-consistent verdict,
+            // because part of the evidence is still missing.
+            var partial = new IndustryIndex { Revision = 14, Complete = false, CargoCatalogueComplete = false };
+            partial.CargoNames["9"] = "废料";
+            var onlyProducer = new IndustryEntry { EntityId = "4001", TypeName = "废料场", RecipeStatus = "verified", InputStatus = "empty", OutputStatus = "verified", RoleStatus = "verified" };
+            onlyProducer.Outputs.Add(new IndustryCargoRef { CargoId = "9", Role = "output" }); onlyProducer.OutputIds.Add("9");
+            partial.Industries.Add(onlyProducer);
+            var partialRows = Data.Rows(Data.Json.DeserializeObject(Data.Json.Serialize(Audit(partial, "offline"))));
+            if (partialRows.Count == 0 || partialRows.Any(r => Data.Str(r, "verdict") != "unverified"))
+                throw new InvalidOperationException("未读取完整的索引被审计为自洽。");
         }
     }
 }

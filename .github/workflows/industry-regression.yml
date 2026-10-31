@@ -1,0 +1,50 @@
+name: 产业链回归检查
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: industry-regression-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lua-check:
+    name: Lua 适配层回归
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 获取源码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # The check runs on a real Lua 5.4 interpreter, not on a JavaScript
+      # emulation, because the adapter relies on the Lua 5.4 standard library
+      # and on the table iteration semantics of the game runtime.
+      - name: 安装 Lua 5.4
+        uses: leafo/gh-actions-lua@v13
+        with:
+          luaVersion: '5.4.6'
+
+      - name: 运行产业适配层回归
+        shell: bash
+        run: |
+          set -euo pipefail
+          lua -v
+          lua scripts/industry-lua-check.lua src/功能接口v6.lua
+          lua scripts/industry-lua-probes.lua src/功能接口v6.lua
+          # The probes must fail against the implementation that had the
+          # defect, otherwise they do not actually guard that defect. The
+          # baseline is kept as a fixture so the guard stays valid after the
+          # branch is merged and the previous commit is no longer reachable.
+          if lua scripts/industry-lua-probes.lua scripts/fixtures/industry-baseline-lua6.lua; then
+            echo "::error::回归探针在缺陷基线实现上没有失败，探针无法捕获该缺陷。"
+            exit 1
+          fi
+          echo "回归探针在缺陷基线实现上按预期失败。"
