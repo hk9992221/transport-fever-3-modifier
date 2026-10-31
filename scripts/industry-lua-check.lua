@@ -699,4 +699,104 @@ do
     expect(found, "a map shaped official result was dropped")
 end
 
+-- 17. The real API exposes CargoType and Rule as field-readable userdata.
+-- getName returns a RESOURCE identifier; only CargoType.name is a display name.
+-- These cases require native Lua (as used by CI), rather than a JS emulator.
+local function nativeRecord(values)
+    local value = assert(io.tmpfile(), "native userdata fixture unavailable")
+    local previous = debug.getmetatable(value)
+    debug.setmetatable(value, { __index = function(_, key)
+        if values[key] == nil then error("unknown native field " .. tostring(key)) end
+        return values[key]
+    end })
+    return value, function() debug.setmetatable(value, previous); value:close() end
+end
+
+do
+    local S, mock = load({ count = 1, towns = 0 })
+    local names = { [1] = "原油", [2] = "化学品", [3] = "肥料", [4] = "燃料", [5] = "专用催化剂" }
+    local resources = { [0] = "::/cargos/passengers/passengers.cargo" }
+    local keys = { "crude_oil", "chemicals", "fertilizer", "fuel" }
+    for i, key in ipairs(keys) do resources[i] = "::/cargos/" .. key .. "/" .. key .. ".cargo" end
+    resources[5] = "::/mods/native/special.cargo"
+    local records, close = {}, {}
+    for i, label in pairs(names) do records[i], close[i] = nativeRecord({ name = label, timeToDeliverInSeconds = 60 }) end
+    mock.res.cargoTypeRep.get = function(id) return records[id] end
+    mock.res.cargoTypeRep.getAll = function() return resources end
+    mock.res.cargoTypeRep.getName = function(id) return resources[id] end
+    fetchPart(S, "industry"); fetchPart(S, "town"); fetchPart(S, "cargo")
+    local actual = {}; for _, cargo in ipairs(S.industryIndex.cargo) do actual[cargo.id] = cargo.name end
+    for id, label in pairs(names) do
+        expect(actual[tostring(id)] == label, "native cargo display name became a resource path: " .. tostring(actual[tostring(id)]))
+    end
+    -- The older cargo-addition catalogue must use the same display resolver.
+    local state = S.tick(true)
+    for _, dispose in pairs(close) do dispose() end
+    expect(state:find('"name":"原油"', 1, true) ~= nil, "cargo-addition catalogue lost its Chinese display name")
+end
+
+-- Missing/English vanilla labels have a Chinese resource-name fallback.
+-- A mod's localized label is preserved; an unknown resource path is not UI text.
+do
+    local S, mock = load({ count = 1, towns = 0 })
+    local resources = { [0] = "::/cargos/passengers/passengers.cargo", [1] = "::/cargos/crude_oil/crude_oil.cargo",
+        [2] = "::/cargos/fertilizer/fertilizer.cargo", [3] = "::/mods/custom/catalyst.cargo", [4] = "::/mods/custom/mystery.cargo" }
+    mock.res.cargoTypeRep.getAll = function() return resources end
+    mock.res.cargoTypeRep.getName = function(id) return resources[id] end
+    mock.res.cargoTypeRep.get = function(id)
+        if id == 1 then return { name = "Crude Oil" } end
+        if id == 3 then return { name = "精炼催化剂" } end
+        error("display resource unavailable")
+    end
+    fetchPart(S, "industry"); fetchPart(S, "town"); fetchPart(S, "cargo")
+    local labels = {}; for _, cargo in ipairs(S.industryIndex.cargo) do labels[cargo.id] = cargo.name end
+    expect(labels["1"] == "原油" and labels["2"] == "肥料", "vanilla cargo names were not localized")
+    expect(labels["3"] == "精炼催化剂", "a mod display name was replaced by a fallback")
+    expect(labels["4"] == "货物 4", "an unknown resource identifier leaked into UI")
+end
+
+-- Fertilizer is consumed by native booster rules even when the aggregated
+-- production helper omits that optional material. Identity is cargo-ID based.
+do
+    local S, mock = load({ count = 5, towns = 0,
+        customRules = { [5001] = { { input = { { 1 } }, output = { [6] = 1 } } }, [5005] = {} },
+        customRecipes = { [5001] = { inputs = { 1 }, outputs = { 6 } }, [5002] = { inputs = {}, outputs = { 7 } },
+            [5003] = { inputs = {}, outputs = { 7 } }, [5004] = { inputs = {}, outputs = { 7 } }, [5005] = { inputs = {}, outputs = {} } } })
+    local close = {}
+    for id = 5002, 5004 do
+        local base, closeBase = nativeRecord({ input = {}, output = { [7] = 1 }, booster = false })
+        local booster, closeBooster = nativeRecord({ input = { { 6 } }, output = {}, booster = true })
+        mock.engine.getComponent(id, mock.type.ComponentType.STOCK_LIST).rules = { [1] = base, [8] = booster }
+        close[#close + 1] = closeBase; close[#close + 1] = closeBooster
+    end
+    -- Capacity alone does not establish a consumption relationship.
+    mock.engine.getComponent(5005, mock.type.ComponentType.STOCK_LIST).stocks = { { cargoType = 6, capacity = 100 } }
+    fetchPart(S, "industry"); fetchPart(S, "town"); fetchPart(S, "cargo")
+    local consumers = {}
+    for _, industry in ipairs(S.industryIndex.industries) do
+        for _, input in ipairs(industry.inputs) do
+            if input.cargoId == "6" then
+                consumers[#consumers + 1] = industry.entityId
+                expect(input.role == "boost" and input.roleKnown, "fertilizer was not identified as an optional booster")
+                expect(industry.inputStatus == "verified" and industry.outputStatus == "verified", "readable native rules remained unread")
+            end
+        end
+    end
+    for _, dispose in ipairs(close) do dispose() end
+    table.sort(consumers)
+    expect(table.concat(consumers, ",") == "1002,1003,1004", "fertilizer downstream lost native farms or included a storage-only target: " .. table.concat(consumers, ","))
+    expect(S.industryIndex.complete and S.industryIndex.unreadIndustryCount == 0, "native rules made the complete catalogue partial")
+end
+
+-- An opaque native rule stays pending instead of crashing or pretending empty.
+do
+    local S, mock = load({ count = 1, towns = 0, customRecipes = { [5001] = { inputs = {}, outputs = {} } } })
+    local value, dispose = nativeRecord({ unknown = true })
+    mock.engine.getComponent(5001, mock.type.ComponentType.STOCK_LIST).rules = { value }
+    fetchPart(S, "industry"); fetchPart(S, "town"); fetchPart(S, "cargo")
+    dispose()
+    expect(S.industryIndex.unreadIndustryCount == 1 and not S.industryIndex.complete, "an opaque native rule was silently accepted")
+end
+
 print("INDUSTRY_LUA_CHECK_OK")
+

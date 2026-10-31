@@ -1,5 +1,10 @@
 local S=(type(__SZTF3F6)=='table' and __SZTF3F6.protocol==6 and __SZTF3F6) or {protocol=6,version='1.1.7',settings={},backups={},jobs={},lastMessage='已连接游戏内存',lastError='',catalog={},stocks={},worlds={},tasks={},nextScan=0,commandCount=0}
 S.version='1.1.7';S.protocol=6
+-- Invalidate indexes made by the old table-only binding reader on reconnect.
+if S.industryBindingRevision~=1 then
+ S.industryIndex=nil;S.industryBuild=nil;S.cargoNames=nil;S.cargoCatalogue=nil;S.nextScan=0
+ S.industryBindingRevision=1
+end
 local CT=api and api.type and api.type.ComponentType or {}
 local isCallable
 local function arr(t) return setmetatable(t or {},{jsonArray=true}) end
@@ -287,6 +292,15 @@ end
 -- Industry recommendation index. Matching is derived only from production
 -- rules and town needs; stock compatibility, stock counts and building names
 -- never decide supply or demand.
+-- Engine records can be userdata. Read fields without assuming a Lua table,
+-- and keep missing/throwing native properties from aborting a whole scan.
+local function recordField(value,key)
+ local kind=type(value)
+ if kind~='table' and kind~='userdata' then return nil,false end
+ local ok,result=pcall(function()return value[key] end)
+ if ok then return result,true end
+ return nil,false
+end
 --
 -- Official API evidence used by this adapter (see
 -- docs/产业链识别完整性修复规格.md §2 and §3):
@@ -320,8 +334,8 @@ end
 -- A cargo reference may be a bare id or a record that carries the id. The id
 -- is read from the documented fields only, never by scanning every number.
 local function refCargo(value)
- if type(value)=='table' then
-  return cargoKey(value.cargoType or value.cargo or value.cargoId or value.type or value.id or value[1])
+ if type(value)=='table' or type(value)=='userdata' then
+  return cargoKey(recordField(value,'cargoType') or recordField(value,'cargo') or recordField(value,'cargoId') or recordField(value,'type') or recordField(value,'id') or recordField(value,1))
  end
  return cargoKey(value)
 end
@@ -361,7 +375,7 @@ local function cargoCatalogue()
  S.cargoCatalogue=S.cargoCatalogue or {}
  local cat=S.cargoCatalogue
  if cat.ids then return cat end
- cat.ids={};cat.complete=false
+ cat.ids={};cat.resources={};cat.complete=false
  local getter=api and api.res and api.res.cargoTypeRep and api.res.cargoTypeRep.getAll
  if isCallable(getter) then
   local ok,all=pcall(getter)
@@ -370,7 +384,7 @@ local function cargoCatalogue()
    for key,value in pairs(all) do
     local id=cargoKey(key)
     if not id then id=cargoKey(value) end
-    if id then cat.ids[id]=true;found=true end
+    if id then cat.ids[id]=true;if type(value)=='string' then cat.resources[id]=value end;found=true end
    end
    cat.complete=found
   end
@@ -384,24 +398,51 @@ local function cargoAcceptable(id)
  if id~='0' then return true end
  return cargoCatalogue().ids['0']==true
 end
+-- Display-only fallback for vanilla resource names; cargo identity and every
+-- production relationship still use the real resource IDs and game rules.
+local CARGO_ZH={
+ passenger='旅客',passengers='旅客',beverages='饮料',books='书籍',bricks='砖块',canned_food='罐头食品',
+ cement='水泥',chemicals='化学品',clay='黏土',clothes='服装',coal='煤炭',crude_oil='原油',dyes='染料',
+ fabric='织物',fertilizer='肥料',fish='鱼类',fuel='燃料',furniture='家具',glass='玻璃',grain='谷物',
+ iron_ore='铁矿石',logs='原木',machines='机械',meat='肉类',paper='纸张',planks='木板',plastic='塑料',
+ rubber='橡胶',sand='沙子',sawdust='木屑',sheet_metal='金属板',steel='钢材',stone='石料',tires='轮胎',
+ tools='工具',vegetables='蔬菜',vehicles='车辆',wool='羊毛',scrap='废料',waste='废料',cotton='棉花',
+ food='食品',goods='货物',construction_materials='建筑材料'
+}
+local function resourceName(value)
+ return type(value)=='string' and (value:match('^::/')~=nil or value:match('%.cargo$')~=nil)
+end
+local function cargoDisplayLabel(value)
+ if type(value)~='string' or not value:match('%S') or resourceName(value) then return nil end
+ local key=value:lower():gsub('[%s%-]+','_')
+ return CARGO_ZH[key] or value
+end
+local function vanillaCargoLabel(resource)
+ if type(resource)~='string' then return nil end
+ -- Restrict path fallbacks to the base cargo namespace; mod names are not
+ -- translated just because their filename resembles a vanilla cargo.
+ local key=resource:match('^::/cargos/([^/]+)/[^/]+%.cargo$') or resource:match('^cargos/([^/]+)/[^/]+%.cargo$')
+ return key and CARGO_ZH[key] or nil
+end
 local function cargoName(id)
  S.cargoNames=S.cargoNames or {}
  local key=cargoKey(id);if not key then return '未知货物' end
- local cached=S.cargoNames[key];if cached then return cached end
+ local cached=cargoDisplayLabel(S.cargoNames[key]);if cached then return cached end
  local label=nil
  local rep=api and api.res and api.res.cargoTypeRep
- -- A getter that is not available must not hide the one behind it, so the
- -- candidates are walked by index and every missing one is skipped.
- local candidates={rep and rep.get,rep and rep.getName}
- for index=1,#candidates do
-  local getter=candidates[index]
-  if isCallable(getter) then
-   local ok,value=pcall(getter,tonumber(key))
-   if ok then
-    if type(value)=='table' and type(value.name)=='string' and value.name:match('%S') then label=value.name;break end
-    if type(value)=='string' and value:match('%S') then label=value;break end
-   end
+ -- CargoType.name is the display label. ResTypeRep.getName is the resource
+ -- identifier, so it can supply a fallback key but is never shown verbatim.
+ if rep and isCallable(rep.get) then
+  local ok,value=pcall(rep.get,tonumber(key))
+  if ok then label=cargoDisplayLabel(recordField(value,'name')) or cargoDisplayLabel(value) end
+ end
+ if not label then
+  local cat=cargoCatalogue()
+  local resource=cat.resources and cat.resources[key]
+  if not resource and rep and isCallable(rep.getName) then
+   local ok,value=pcall(rep.getName,tonumber(key));if ok then resource=value end
   end
+  label=vanillaCargoLabel(resource)
  end
  if not label then label='货物 '..key end
  S.cargoNames[key]=label;return label
@@ -550,14 +591,22 @@ end
 -- unparsedOutputs, reason. The unparsed counts are kept per direction so a
 -- malformed input does not mark the output direction as incomplete.
 local function industryRules(sl,inputs,outputs,seenIn,seenOut,officialOut)
- local rules=sl and sl.rules
+ local rules=recordField(sl,'rules')
  if type(rules)~='table' then return false,false,0,0,'生产规则不可读' end
  local found=false
  local unparsedIn,unparsedOut=0,0
  local reason=''
+ local function readRule(value)
+  local input,inputOK=recordField(value,'input')
+  local output,outputOK=recordField(value,'output')
+  local booster,boosterOK=recordField(value,'booster')
+  if not inputOK or not outputOK or not boosterOK or (booster~=nil and type(booster)~='boolean') then return nil end
+  -- byproducts is optional and not exposed by every native Rule binding.
+  return {input=input,output=output,booster=booster,byproducts=recordField(value,'byproducts')}
+ end
  for _,key in ipairs(sortedKeys(rules)) do
-  local rule=rules[key]
-  if type(rule)~='table' then
+  local rule=readRule(rules[key])
+  if not rule then
    unparsedIn=unparsedIn+1;unparsedOut=unparsedOut+1
    if reason=='' then reason='规则 '..tostring(key)..' 结构不可读' end
   else
@@ -1126,7 +1175,11 @@ local function stockOptions()
 end
 local function scan()
  local cat=arr()
- for i,path in pairs(api.res.cargoTypeRep.getAll()) do if i~=0 then local c=api.res.cargoTypeRep.get(i);cat[#cat+1]={id=tostring(i),name=c.name,category='货物',description='交付时限 '..c.timeToDeliverInSeconds..' 秒',path=path} end end
+ for i,path in pairs(api.res.cargoTypeRep.getAll()) do if i~=0 then
+  local ok,c=pcall(api.res.cargoTypeRep.get,i)
+  local seconds=ok and recordField(c,'timeToDeliverInSeconds') or nil
+  cat[#cat+1]={id=tostring(i),name=cargoName(i),category='货物',description=finite(seconds) and ('交付时限 '..seconds..' 秒') or '货物',path=path}
+ end end
  table.sort(cat,function(a,b)return a.name<b.name end);S.catalog=cat;S.stocks=stockOptions();S.worlds=arr()
  for _,e in pairs(entities(CT.TOWN)) do local c=component(e,CT.TOWN);S.worlds[#S.worlds+1]={id=tostring(e),gameName=gameName(e) or '',name=name(e,'城镇'),category='城镇',res=c.initialLandUseCapacities[1],commercial=c.initialLandUseCapacities[2],industry=c.initialLandUseCapacities[3],description='城镇土地容量与镜头定位'} end
  for _,e in pairs(entities(CT.INDUSTRY)) do local c=component(e,CT.INDUSTRY);local sl=component(c.stockList,CT.STOCK_LIST);S.worlds[#S.worlds+1]={id=tostring(e),gameName=gameName(e) or '',name=name(e,'产业'),category='产业',productivity=sl and sl.modifiers.productivity or 1,description='产业等级 '..c.level..' / '..c.maxLevel..' · 镜头定位'} end
@@ -1335,3 +1388,4 @@ function S.tick(active)
 end
 rawset(_G,'__SZTF3F6',S)
 return '{}'
+
