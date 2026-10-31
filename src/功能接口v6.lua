@@ -317,6 +317,14 @@ local function cargoKey(v)
  end
  return nil
 end
+-- A cargo reference may be a bare id or a record that carries the id. The id
+-- is read from the documented fields only, never by scanning every number.
+local function refCargo(value)
+ if type(value)=='table' then
+  return cargoKey(value.cargoType or value.cargo or value.cargoId or value.type or value.id or value[1])
+ end
+ return cargoKey(value)
+end
 -- Every numeric index of a table. The engine may hand out 0-based or sparse
 -- arrays; ipairs stops at the first hole and would silently drop every cargo
 -- id behind the gap.
@@ -347,6 +355,8 @@ end
 -- passenger id 0; an id the catalogue does not know is still kept but marked,
 -- so a stray number never becomes another cargo and a real cargo is never
 -- dropped because of a failed catalogue read.
+-- A failed read is cached only for the current index build and is cleared by
+-- an explicit refresh, so a recovered catalogue is picked up again.
 local function cargoCatalogue()
  S.cargoCatalogue=S.cargoCatalogue or {}
  local cat=S.cargoCatalogue
@@ -450,45 +460,54 @@ end
 -- accepted as well because a group carries the same ids as its members.
 -- The result may also be a map keyed by cargo id, so the two shapes are
 -- told apart by the values and never by guessing.
+-- The aggregated helper returns {{CargoTypeId}, {CargoTypeId}}: a list of
+-- cargo ids. A map keyed by cargo id and a list of groups are accepted too.
+-- The shape is decided by the VALUE types, because a zero-based or sparse
+-- list must not be mistaken for a map: an entry that cannot be explained is
+-- counted as unparsed and never turned into another cargo id.
 local function collectOfficial(list,out,seen,role,source)
- if type(list)~='table' then return 0 end
- local count=0
+ if type(list)~='table' then return 0,0 end
+ local count,unparsed=0,0
  local function push(value)
   local id=cargoKey(value)
-  if not id then return end
-  if not cargoAcceptable(id) then return end
+  if not id then unparsed=unparsed+1;return end
+  if not cargoAcceptable(id) then unparsed=unparsed+1;return end
   if addCargoRef(out,seen,id,role,nil,source) then count=count+1 end
  end
- local function pushTable(value)
-  local pushed=false
-  for _,inner in ipairs(numericKeys(value)) do push(value[inner]) end
-  return pushed
+ local entries={}
+ for key,value in pairs(list) do entries[#entries+1]={key=key,value=value} end
+ if #entries==0 then return 0,0 end
+ local allNumbers,allBoolean,allTables=true,true,true
+ for _,entry in ipairs(entries) do
+  local kind=type(entry.value)
+  if kind~='number' then allNumbers=false end
+  if kind~='boolean' then allBoolean=false end
+  if kind~='table' then allTables=false end
  end
- local keys=numericKeys(list)
- if #keys>0 then
-  local dense=true
-  for index,key in ipairs(keys) do if key~=index then dense=false;break end end
-  if dense then
-   for _,key in ipairs(keys) do
-    local value=list[key]
-    if type(value)=='table' then pushTable(value) else push(value) end
-   end
-  else
-   -- A map keyed by cargo id: the keys are the cargo ids.
-   for _,key in ipairs(keys) do
-    local id=cargoKey(key)
-    if id then
-     if not cargoAcceptable(id) then return end
-     if addCargoRef(out,seen,id,role,nil,source) then count=count+1 end
-    end
-   end
+ if allNumbers then
+  -- A list of cargo ids, whatever its keys are.
+  for _,entry in ipairs(entries) do push(entry.value) end
+ elseif allBoolean then
+  -- A set keyed by cargo id.
+  for _,entry in ipairs(entries) do
+   local id=cargoKey(entry.key)
+   if not id then unparsed=unparsed+1
+   elseif not cargoAcceptable(id) then unparsed=unparsed+1
+   elseif addCargoRef(out,seen,id,role,nil,source) then count=count+1 end
+  end
+ elseif allTables then
+  -- A list of groups; each group is a list of cargo ids.
+  for _,entry in ipairs(entries) do
+   local inner=entry.value
+   local innerKeys=numericKeys(inner)
+   if #innerKeys==0 then unparsed=unparsed+1
+   else for _,key in ipairs(innerKeys) do push(inner[key]) end end
   end
  else
-  for _,value in pairs(list) do
-   if type(value)=='table' then pushTable(value) else push(value) end
-  end
+  -- Mixed values: keep the cargo ids that are readable and count the rest.
+  for _,entry in ipairs(entries) do push(entry.value) end
  end
- return count
+ return count,unparsed
 end
 local function idSet(refs)
  local set={}
@@ -540,16 +559,24 @@ local function industryRules(sl,inputs,outputs,seenIn,seenOut,officialOut)
     if type(groups)=='table' then
      local groupKeys=numericKeys(groups)
      local alternatives=#groupKeys
+     -- A key that is not a group index means part of the input list could
+     -- not be explained, so the direction must not be reported as verified.
+     for _,groupKey in ipairs(sortedKeys(groups)) do
+      if type(groupKey)~='number' then
+       unparsedIn=unparsedIn+1
+       if reason=='' then reason='规则 '..tostring(key)..' 输入项无法解释' end
+      end
+     end
      for _,gk in ipairs(groupKeys) do
       local group=groups[gk]
       local ids={}
       if type(group)=='table' then
        for _,ck in ipairs(numericKeys(group)) do
-        local id=cargoKey(group[ck])
+        local id=refCargo(group[ck])
         if id and cargoAcceptable(id) then ids[#ids+1]=id else unparsedIn=unparsedIn+1 end
        end
       else
-       local id=cargoKey(group)
+       local id=refCargo(group)
        if id and cargoAcceptable(id) then ids[#ids+1]=id else unparsedIn=unparsedIn+1 end
       end
       local role=rule.booster==true and 'boost' or 'required'
@@ -630,29 +657,33 @@ local function readRecipe(ind)
    if officialIn==nil and officialOut==nil then officialReason='配方输入输出结构未识别' end
   else officialReason=tostring(a):gsub('^.-:%d+: ','') end
  else officialReason='配方读取接口不可用或未验证' end
- if officialIn then collectOfficial(officialIn,inputs,seenIn,'required','official') end
- if officialOut then collectOfficial(officialOut,outputs,seenOut,'output','official') end
+ local officialInUnparsed,officialOutUnparsed=0,0
+ if officialIn then _,officialInUnparsed=collectOfficial(officialIn,inputs,seenIn,'required','official') end
+ if officialOut then _,officialOutUnparsed=collectOfficial(officialOut,outputs,seenOut,'output','official') end
  local officialOutSet=idSet(outputs)
  local ruleFound,rulesRead,unparsedIn,unparsedOut,ruleReason=industryRules(sl,inputs,outputs,seenIn,seenOut,officialOutSet)
+ unparsedIn=unparsedIn+officialInUnparsed
+ unparsedOut=unparsedOut+officialOutUnparsed
  -- The status of one direction is decided by whether the source could be
  -- read, not by whether it contained anything:
  --   verified   read and fully understood
  --   empty      read and confirmed to contain no cargo of this direction
  --   partial    read but at least one entry could not be explained
  --   unavailable not read at all
- -- An empty result and a failed read must never share a status.
+ -- An empty result and a failed read must never share a status, and an
+ -- explained empty result is a success, not a pending read.
  -- The rules are a first class source: a direction whose rules could not be
  -- read is never reported as confirmed, even when the official aggregate
  -- could be read, because the rule relations would be missing silently.
  local inputStatus,outputStatus,roleStatus
  local function directionStatus(found,officialReadable,unparsed)
+  if unparsed>0 then return 'partial' end
   if not rulesRead then
    -- The rules were not read at all, so the rule relations of this
    -- direction are unknown.
    if not officialReadable then return 'unavailable' end
    return 'partial'
   end
-  if unparsed>0 then return 'partial' end
   if found then return 'verified' end
   -- The rule set was readable but empty. An empty rule table and a rule
   -- table that was never populated look the same, so this stays unknown
@@ -669,10 +700,13 @@ local function readRecipe(ind)
  local reason=officialReason
  if ruleReason~='' and reason=='' then reason=ruleReason end
  if unparsed>0 and reason=='' then reason='有 '..unparsed..' 条规则未能解释' end
+ -- An empty direction is a confirmed result, so only a real read failure
+ -- makes the recipe pending.
+ local function directionOk(value) return value=='verified' or value=='empty' end
  local status='verified'
  if inputStatus=='unavailable' and outputStatus=='unavailable' then status='unavailable'
  elseif inputStatus=='empty' and outputStatus=='empty' and roleStatus=='verified' then status='empty'
- elseif inputStatus~='verified' or outputStatus~='verified' or roleStatus~='verified' then status='partial' end
+ elseif not directionOk(inputStatus) or not directionOk(outputStatus) or roleStatus~='verified' then status='partial' end
  return inputs,outputs,status,inputStatus,outputStatus,roleStatus,reason,unparsed
 end
 local function industryType(ind)
@@ -734,36 +768,39 @@ local function readTownNeeds(town)
  local needs,seen={},{}
  local parsed,sawEntries,invalid=false,false,false
  local raw=c.cargoNeeds
- -- A demand group is a list of {cargo type id, amount} pairs.
- local function readGroup(group,use)
-  if type(group)~='table' then invalid=true;return end
-  if next(group)==nil then return end
+ -- One demand entry is a {cargo type id, amount} pair. A plain cargo id and
+ -- a record with a cargo type field are accepted too.
+ local function readEntry(entry,use)
+  local id,amount,status
+  if type(entry)=='table' then
+   id=cargoKey(entry[1] or entry.cargoType or entry.cargo)
+   amount=tonumber(entry[2] or entry.amount or entry.demand)
+   if entry.enabled==false or entry.active==false then status='zero'
+   elseif entry.enabled==true or entry.active==true then status='active' end
+  else id=cargoKey(entry) end
+  if not id then return false end
+  if status==nil and amount~=nil then status=amount>0 and 'active' or 'zero' end
+  addTownNeed(needs,seen,id,use,status);parsed=true
+  return true
+ end
+ -- A district is a list of {cargo type id, amount} pairs, which is what the
+ -- documented {{{CargoTypeId, number}}} means. A list of demand groups and a
+ -- list of bare cargo ids are accepted as well, but an entry that cannot be
+ -- explained is counted as invalid instead of becoming a cargo id.
+ local function readDistrictList(list,use)
+  if type(list)~='table' then invalid=true;return end
+  if next(list)==nil then return end
   local entries=0
-  for _,entry in ipairs(group) do
-   local id,amount,status
-   if type(entry)=='table' then
-    id=cargoKey(entry[1] or entry.cargoType or entry.cargo)
-    amount=tonumber(entry[2] or entry.amount or entry.demand)
-    if entry.enabled==false or entry.active==false then status='zero'
-    elseif entry.enabled==true or entry.active==true then status='active' end
-   else id=cargoKey(entry) end
-   if id then
-    if status==nil and amount~=nil then status=amount>0 and 'active' or 'zero' end
-    addTownNeed(needs,seen,id,use,status);parsed=true;entries=entries+1
+  for _,entry in ipairs(list) do
+   if type(entry)=='table' and type(entry[1])=='table' then
+    -- One extra group level: read each group as a pair list.
+    for _,nested in ipairs(entry) do
+     if readEntry(nested,use) then entries=entries+1 else invalid=true end
+    end
+   elseif readEntry(entry,use) then entries=entries+1
    else invalid=true end
   end
   if entries==0 then invalid=true end
- end
- -- A district is a list of demand groups.
- local function readGroups(list,use)
-  if type(list)~='table' then invalid=true;return end
-  if next(list)==nil then return end
-  local groups=0
-  for _,group in ipairs(list) do
-   if type(group)=='table' then readGroup(group,use) else invalid=true end
-   groups=groups+1
-  end
-  if groups==0 then invalid=true end
  end
  -- A district may also be a map from cargo type id to amount.
  local function readDistrictMap(map,use)
@@ -771,8 +808,8 @@ local function readTownNeeds(town)
   if next(map)==nil then return end
   local entries=0
   for key,value in pairs(map) do
-   -- A cargo id is never derived from an array position, so a numeric key
-   -- that is not a plausible cargo id makes the whole district unparsed.
+   -- A cargo id is never derived from an array position, so a key that is
+   -- not a plausible cargo id makes the whole district unparsed.
    local id=cargoKey(key)
    local amount=tonumber(value)
    if not id then invalid=true
@@ -784,22 +821,15 @@ local function readTownNeeds(town)
   end
   if entries==0 then invalid=true end
  end
- -- The shape of one district decides how it is read. A map keyed by cargo
- -- id has no consecutive numeric keys, so the two are told apart without
- -- guessing a cargo id from an array index.
+ -- The shape of one district decides how it is read. Consecutive numeric keys
+ -- mean a list of demand entries; anything else means a map keyed by cargo id.
  local function readDistrict(value,use)
   if type(value)~='table' then invalid=true;return end
   if next(value)==nil then return end
   local keys=numericKeys(value)
-  local dense=true
+  local dense=#keys>0
   for index,key in ipairs(keys) do if key~=index then dense=false;break end end
-  if dense then
-   -- A list of demand groups.
-   readGroups(value,use)
-  else
-   -- A map from cargo type id to amount.
-   readDistrictMap(value,use)
-  end
+  if dense then readDistrictList(value,use) else readDistrictMap(value,use) end
  end
  local listKeys=numericKeys(raw)
  if #listKeys>0 then
@@ -807,18 +837,14 @@ local function readTownNeeds(town)
   -- industrial in that order.
   for index,key in ipairs(listKeys) do
    sawEntries=true
-   local use=index
-   readDistrict(raw[key],use)
+   readDistrict(raw[key],index)
   end
  else
   -- Older shape: map from land use to a list of demand entries.
   for landUse,list in pairs(raw) do
    sawEntries=true
    local use=tonumber(landUse)
-   if use and use>=1 and use<=3 then
-    -- The list holds {cargo type id, amount} pairs.
-    readGroup(list,use)
-   else invalid=true end
+   if use and use>=1 and use<=3 then readDistrictList(list,use) else invalid=true end
   end
  end
  if not sawEntries or not invalid then return needs,'verified' end
@@ -1249,6 +1275,8 @@ function S.dispatch(c)
   validateIndustryScope(c)
   S.industryRevision=(S.industryIndex and S.industryIndex.revision) or S.industryRevision or 0
   S.industryIndex=nil;S.industryIndexWorld=nil;S.industryIndexScope=nil;S.industryBuild=nil
+  -- An explicit refresh retries a catalogue read that failed earlier.
+  S.cargoCatalogue=nil;S.cargoNames=nil;S.landUseEnum=nil
   local build=newIndustryBuild();S.industryBuild=build;S.lastMessage='正在刷新产业与城镇索引'
   return json({ok=true,request=c.request,world=S.world,nameScope=S.nameScope,revision=build.revision,message=S.lastMessage})
  else error('未知操作：'..tostring(c.op)) end

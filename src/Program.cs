@@ -49,6 +49,7 @@ static class IndustryAudit {
   var rows=IndustryRelations.Audit(index,"live-game");
   var report=new{
    generatedAt=DateTime.UtcNow.ToString("o"),source="live-game",revision=revision,world=world,nameScope=scope,
+   auditMethod=IndustryRelations.AuditMethod,
    complete=index.Complete,cargoCatalogueComplete=index.CargoCatalogueComplete,
    industryCount=index.Industries.Count,townCount=index.Towns.Count,
    unreadIndustryCount=index.UnreadIndustryCount,unreadTownCount=index.UnreadTownCount,

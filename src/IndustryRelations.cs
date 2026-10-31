@@ -739,6 +739,13 @@ namespace TransportFever3Trainer
         // A machine readable audit of the current index: for every cargo the
         // producing, consuming and town candidate sets are listed together
         // with the read status that produced them.
+        //
+        // This is a checklist of the actual sets, not an independent
+        // verification. Proving that a relation is missing needs a separately
+        // verified expected set, so the verdict only claims that the sets are
+        // self consistent under a complete read.
+        public const string AuditMethod =
+            "actual-sets-only: verdict is selfConsistent/notInCurrentMap/unverified; an independent expected set is required to detect missing or extra relations";
         public static List<object> Audit(IndustryIndex index, string source)
         {
             var rows = new List<object>();
@@ -751,19 +758,23 @@ namespace TransportFever3Trainer
             foreach (var town in index.Towns) foreach (var need in town.Needs) cargoIds.Add(need.CargoId);
             foreach (var id in index.CargoNames.Keys) cargoIds.Add(id);
             // The pending counts describe the whole map, so they are computed
-            // once and reported on every row.
+            // once and reported on every row. A page that could not be read,
+            // an incomplete scan and an unread cargo catalogue all make the
+            // map-wide evidence insufficient, so no cargo can be called
+            // consistent in that state.
             int uncertainInputs = index.Industries.Count(e => e.InputsUncertain);
             int uncertainOutputs = index.Industries.Count(e => e.OutputsUncertain);
             int uncertainTowns = index.Towns.Count(t => t.NeedsStatus == "unread" || t.NeedsStatus == "partial");
+            bool mapComplete = index.Complete && index.CargoCatalogueComplete;
             foreach (var cargoId in cargoIds)
             {
                 var producers = index.Industries.Where(e => e.OutputIds.Contains(cargoId)).Select(e => e.EntityId).OrderBy(x => x).ToList();
                 var consumers = index.Industries.Where(e => e.InputIds.Contains(cargoId)).Select(e => e.EntityId).OrderBy(x => x).ToList();
                 var towns = index.Towns.Where(t => t.Need(cargoId) != null).Select(t => t.EntityId).OrderBy(x => x).ToList();
                 string verdict;
-                if (uncertainInputs > 0 || uncertainOutputs > 0 || uncertainTowns > 0) verdict = "unverified";
+                if (!mapComplete || uncertainInputs > 0 || uncertainOutputs > 0 || uncertainTowns > 0) verdict = "unverified";
                 else if (consumers.Count == 0 && producers.Count == 0 && towns.Count == 0) verdict = "notInCurrentMap";
-                else verdict = "consistent";
+                else verdict = "selfConsistent";
                 rows.Add(new
                 {
                     cargoId = cargoId,
@@ -774,6 +785,7 @@ namespace TransportFever3Trainer
                     uncertainInputIndustries = uncertainInputs,
                     uncertainOutputIndustries = uncertainOutputs,
                     uncertainTowns = uncertainTowns,
+                    mapComplete = mapComplete,
                     verdict = verdict,
                     source = source
                 });
@@ -855,10 +867,20 @@ namespace TransportFever3Trainer
             foreach (var row in auditRows)
             {
                 string verdict = Data.Str(row, "verdict");
-                if (verdict != "consistent" && verdict != "notInCurrentMap" && verdict != "unverified")
+                if (verdict != "selfConsistent" && verdict != "notInCurrentMap" && verdict != "unverified")
                     throw new InvalidOperationException("审计结论取值不在规格允许的范围内。");
                 if (Data.Str(row, "cargoId").Length == 0) throw new InvalidOperationException("审计记录缺少货物编号。");
             }
+            // An incomplete map must never produce a self-consistent verdict,
+            // because part of the evidence is still missing.
+            var partial = new IndustryIndex { Revision = 14, Complete = false, CargoCatalogueComplete = false };
+            partial.CargoNames["9"] = "废料";
+            var onlyProducer = new IndustryEntry { EntityId = "4001", TypeName = "废料场", RecipeStatus = "verified", InputStatus = "empty", OutputStatus = "verified", RoleStatus = "verified" };
+            onlyProducer.Outputs.Add(new IndustryCargoRef { CargoId = "9", Role = "output" }); onlyProducer.OutputIds.Add("9");
+            partial.Industries.Add(onlyProducer);
+            var partialRows = Data.Rows(Data.Json.DeserializeObject(Data.Json.Serialize(Audit(partial, "offline"))));
+            if (partialRows.Count == 0 || partialRows.Any(r => Data.Str(r, "verdict") != "unverified"))
+                throw new InvalidOperationException("未读取完整的索引被审计为自洽。");
         }
     }
 }

@@ -38,12 +38,13 @@ jobs:
           set -euo pipefail
           lua -v
           lua scripts/industry-lua-check.lua src/功能接口v6.lua
-          # The check must fail against the implementation that had the
-          # defect, otherwise it does not actually guard that defect. The
-          # baseline is kept as a fixture so the check stays valid after the
+          lua scripts/industry-lua-probes.lua src/功能接口v6.lua
+          # The probes must fail against the implementation that had the
+          # defect, otherwise they do not actually guard that defect. The
+          # baseline is kept as a fixture so the guard stays valid after the
           # branch is merged and the previous commit is no longer reachable.
-          if lua scripts/industry-lua-check.lua scripts/fixtures/industry-baseline-lua6.lua; then
-            echo "::error::回归用例在缺陷基线实现上没有失败，用例无法捕获该缺陷。"
+          if lua scripts/industry-lua-probes.lua scripts/fixtures/industry-baseline-lua6.lua; then
+            echo "::error::回归探针在缺陷基线实现上没有失败，探针无法捕获该缺陷。"
             exit 1
           fi
-          echo "回归用例在缺陷基线实现上按预期失败。"
+          echo "回归探针在缺陷基线实现上按预期失败。"
