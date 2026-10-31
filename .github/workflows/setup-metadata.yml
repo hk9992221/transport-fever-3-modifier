@@ -1,0 +1,71 @@
+name: Setup 安装包元数据检查
+
+on:
+  push:
+    paths:
+      - packaging/build-setup.ps1
+      - packaging/windows-setup.iss
+      - .github/workflows/setup-metadata.yml
+  pull_request:
+    paths:
+      - packaging/build-setup.ps1
+      - packaging/windows-setup.iss
+      - .github/workflows/setup-metadata.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: 获取源码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 编译安装包并核验版本保护
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'tf3-setup-metadata'
+          $payload = Join-Path $root 'payload'
+          New-Item -ItemType Directory -Path $payload -Force | Out-Null
+          $source = Join-Path $root 'fixture.cs'
+          'static class Program { static void Main() {} }' | Set-Content -LiteralPath $source -Encoding utf8
+          $csc = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+          & $csc /nologo /target:winexe ('/out:' + (Join-Path $payload 'fixture.exe')) $source
+          if ($LASTEXITCODE -ne 0) { throw '元数据测试程序编译失败。' }
+          $parameters = @{ PackageDirectory = $payload; MainProgram = 'fixture.exe'; Version = '1.2.3' }
+          ./packaging/build-setup.ps1 @parameters -OutputDirectory (Join-Path $root 'valid')
+
+          # Exercise the real compiler and make sure invalid binary metadata
+          # is still rejected, rather than merely removing the version guard.
+          $iss = Join-Path $env:GITHUB_WORKSPACE 'packaging/windows-setup.iss'
+          $original = [IO.File]::ReadAllText($iss)
+          $cases = @(
+            @{ Name = 'wrong-version'; Pattern = '(?m)^VersionInfoVersion=.*$'; Value = 'VersionInfoVersion=9.8.7.6' },
+            @{ Name = 'wrong-product'; Pattern = '(?m)^VersionInfoProductName=.*$'; Value = 'VersionInfoProductName=Incorrect fixture product' }
+          )
+          try {
+            foreach ($case in $cases) {
+              $changed = [regex]::Replace($original, $case.Pattern, $case.Value)
+              if ($changed -eq $original) { throw '没有注入预期的错误元数据。' }
+              [IO.File]::WriteAllText($iss, $changed, [Text.UTF8Encoding]::new($true))
+              $rejected = $false
+              try {
+                ./packaging/build-setup.ps1 @parameters -OutputDirectory (Join-Path $root $case.Name)
+              } catch {
+                if ($_.Exception.Message -notlike 'Setup 版本或产品信息不一致。*') { throw }
+                Write-Host ('按预期拒绝：' + $case.Name)
+                $rejected = $true
+              }
+              if (-not $rejected) { throw ('错误元数据未被拒绝：' + $case.Name) }
+            }
+          } finally {
+            [IO.File]::WriteAllText($iss, $original, [Text.UTF8Encoding]::new($true))
+          }

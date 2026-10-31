@@ -40,5 +40,19 @@ if ($LASTEXITCODE -ne 0) { throw 'Setup 安装包编译失败。' }
 $setupPath = Join-Path $OutputDirectory ("TransportFever3Modifier-v$Version-windows-x64-setup.exe")
 if (-not (Test-Path -LiteralPath $setupPath -PathType Leaf)) { throw '安装编译器未生成预期的 Setup EXE。' }
 $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($setupPath)
-if ($info.FileVersion -ne "$Version.0" -or $info.ProductName -ne '狂热运输3修改器') { throw 'Setup 版本或产品信息不一致。' }
+# FileVersion is a display string; compare the fixed four-part PE version.
+$actualVersion = [Version]::new($info.FileMajorPart, $info.FileMinorPart, $info.FileBuildPart, $info.FilePrivatePart)
+$expectedVersion = [Version]("$Version.0")
+$metadata = [ordered]@{
+    binaryVersion = $actualVersion.ToString()
+    fileVersionText = $info.FileVersion
+    productVersion = $info.ProductVersion
+    productName = $info.ProductName
+}
+$metadataJson = $metadata | ConvertTo-Json -Compress
+Write-Host ('[构建] Setup 版本信息：' + $metadataJson)
+if ($actualVersion -ne $expectedVersion -or $info.ProductName -ne '狂热运输3修改器') {
+    throw ('Setup 版本或产品信息不一致。预期版本：' + $expectedVersion + '；预期产品：狂热运输3修改器；实际：' + $metadataJson)
+}
 Write-Host ('[构建] Setup 已生成：' + $setupPath)
+

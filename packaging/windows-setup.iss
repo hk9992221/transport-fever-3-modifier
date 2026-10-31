@@ -22,6 +22,7 @@ AppVersion={#AppVersion}
 AppPublisher=hk9992221
 AppPublisherURL=https://github.com/hk9992221/transport-fever-3-modifier
 VersionInfoVersion={#AppVersion}.0
+VersionInfoTextVersion={#AppVersion}.0
 VersionInfoProductName=狂热运输3修改器
 DefaultDirName={localappdata}\Programs\TransportFever3Modifier
 DefaultGroupName=狂热运输3修改器
@@ -54,3 +55,4 @@ Name: "{userdesktop}\狂热运输3修改器"; Filename: "{app}\versions\v{#AppVe
 
 [Run]
 Filename: "{app}\versions\v{#AppVersion}\{#MainProgram}"; Description: "Launch 狂热运输3修改器"; Flags: postinstall unchecked nowait skipifsilent
+
