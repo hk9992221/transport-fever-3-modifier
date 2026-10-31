@@ -1,5 +1,5 @@
-local S=(type(__SZTF3F6)=='table' and __SZTF3F6.protocol==6 and __SZTF3F6) or {protocol=6,version='1.1.7',settings={},backups={},jobs={},lastMessage='已连接游戏内存',lastError='',catalog={},stocks={},worlds={},tasks={},nextScan=0,commandCount=0}
-S.version='1.1.7';S.protocol=6
+local S=(type(__SZTF3F6)=='table' and __SZTF3F6.protocol==6 and __SZTF3F6) or {protocol=6,version='1.1.8',settings={},backups={},jobs={},lastMessage='已连接游戏内存',lastError='',catalog={},stocks={},worlds={},tasks={},nextScan=0,commandCount=0}
+S.version='1.1.8';S.protocol=6
 -- Invalidate indexes made by the old table-only binding reader on reconnect.
 if S.industryBindingRevision~=1 then
  S.industryIndex=nil;S.industryBuild=nil;S.cargoNames=nil;S.cargoCatalogue=nil;S.nextScan=0
