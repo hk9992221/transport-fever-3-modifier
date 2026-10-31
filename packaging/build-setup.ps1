@@ -43,15 +43,19 @@ $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($setupPath)
 # FileVersion is a display string; compare the fixed four-part PE version.
 $actualVersion = [Version]::new($info.FileMajorPart, $info.FileMinorPart, $info.FileBuildPart, $info.FilePrivatePart)
 $expectedVersion = [Version]("$Version.0")
+# Inno Setup pads string resources to their reserved size. Strip only the
+# trailing space/NUL padding; keep rejecting a genuinely different product.
+$actualProductName = ([string]$info.ProductName).TrimEnd([char[]]@([char]0, [char]32))
 $metadata = [ordered]@{
     binaryVersion = $actualVersion.ToString()
     fileVersionText = $info.FileVersion
     productVersion = $info.ProductVersion
-    productName = $info.ProductName
+    productName = $actualProductName
+    productNameRaw = $info.ProductName
 }
 $metadataJson = $metadata | ConvertTo-Json -Compress
 Write-Host ('[构建] Setup 版本信息：' + $metadataJson)
-if ($actualVersion -ne $expectedVersion -or $info.ProductName -ne '狂热运输3修改器') {
+if ($actualVersion -ne $expectedVersion -or $actualProductName -cne '狂热运输3修改器') {
     throw ('Setup 版本或产品信息不一致。预期版本：' + $expectedVersion + '；预期产品：狂热运输3修改器；实际：' + $metadataJson)
 }
 Write-Host ('[构建] Setup 已生成：' + $setupPath)
